@@ -8,7 +8,7 @@ ADMIN_ID = int(
 
 DATABASE_FILE = os.getenv(
     "DATABASE_FILE",
-    "peachvpn.db"
+    "/data/peachvpn.db"
 )
 
 EXPIRE_DAYS = 7
