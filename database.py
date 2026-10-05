@@ -2,10 +2,7 @@ import secrets
 import sqlite3
 from datetime import datetime, timezone, timedelta
 
-from config import (
-    DATABASE_FILE,
-    EXPIRE_DAYS,
-)
+from config import DATABASE_FILE, EXPIRE_DAYS
 
 
 def connect():
@@ -319,58 +316,74 @@ def add_days(
     telegram_id,
     days
 ):
-    user = get_user(
-        telegram_id
-    )
-
-    if not user:
-        return None
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-    try:
-        expires = datetime.fromisoformat(
-            user["expires_at"]
-        )
-
-        if expires.tzinfo is None:
-            expires = expires.replace(
-                tzinfo=timezone.utc
-            )
-
-    except Exception:
-        expires = now
-
-    if expires < now:
-        expires = now
-
-    new_expires = (
-        expires
-        + timedelta(
-            days=days
-        )
-    )
-
     conn = connect()
 
-    conn.execute(
-        """
-        UPDATE users
-        SET expires_at = ?,
-            active = 1,
-            blocked = 0
-        WHERE telegram_id = ?
-        """,
-        (
-            new_expires.isoformat(),
-            telegram_id
+    try:
+        conn.execute(
+            "BEGIN IMMEDIATE"
         )
-    )
 
-    conn.commit()
-    conn.close()
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE telegram_id = ?
+            """,
+            (telegram_id,)
+        ).fetchone()
+
+        if not user:
+            conn.rollback()
+            return None
+
+        now = datetime.now(
+            timezone.utc
+        )
+
+        try:
+            old_expires = datetime.fromisoformat(
+                user["expires_at"]
+            )
+
+            if old_expires.tzinfo is None:
+                old_expires = old_expires.replace(
+                    tzinfo=timezone.utc
+                )
+
+        except Exception:
+            old_expires = now
+
+        if old_expires < now:
+            base_date = now
+        else:
+            base_date = old_expires
+
+        new_expires = (
+            base_date
+            + timedelta(days=days)
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET expires_at = ?,
+                active = 1
+            WHERE telegram_id = ?
+            """,
+            (
+                new_expires.isoformat(),
+                telegram_id
+            )
+        )
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
     return get_user(
         telegram_id
