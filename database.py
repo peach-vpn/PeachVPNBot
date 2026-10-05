@@ -1,8 +1,8 @@
 import secrets
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-from config import DATABASE_FILE, EXPIRE_DAYS
+from config import DATABASE_FILE
 
 
 def connect():
@@ -39,7 +39,7 @@ def init_db():
             username TEXT,
             token TEXT UNIQUE NOT NULL,
             subscription_url TEXT,
-            total_bytes INTEGER NOT NULL DEFAULT 0,
+            total_bytes INTEGER NOT NULL DEFAULT 10737418240,
             expires_at TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 1,
             blocked INTEGER NOT NULL DEFAULT 0,
@@ -52,8 +52,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT UNIQUE NOT NULL,
             promo_type TEXT NOT NULL DEFAULT 'Free',
-            days INTEGER NOT NULL,
-            max_uses INTEGER NOT NULL,
+            days INTEGER NOT NULL DEFAULT 0,
+            max_uses INTEGER NOT NULL DEFAULT 0,
             uses INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         )
@@ -76,6 +76,12 @@ def init_db():
         "users",
         "blocked",
         "INTEGER NOT NULL DEFAULT 0"
+    )
+
+    add_column_if_missing(
+        "users",
+        "total_bytes",
+        "INTEGER NOT NULL DEFAULT 10737418240"
     )
 
     add_column_if_missing(
@@ -132,6 +138,23 @@ def get_user(telegram_id):
     return user
 
 
+def get_user_by_token(token):
+    conn = connect()
+
+    user = conn.execute(
+        """
+        SELECT *
+        FROM users
+        WHERE token = ?
+        """,
+        (token,)
+    ).fetchone()
+
+    conn.close()
+
+    return user
+
+
 def create_user(
     telegram_id,
     username=None
@@ -170,11 +193,17 @@ def create_user(
         timezone.utc
     )
 
-    expires = (
-        now
-        + timedelta(
-            days=EXPIRE_DAYS
-        )
+    # Срок всегда безлимитный.
+    # Дата хранится только для совместимости
+    # со старой базой и больше нигде не используется.
+    expires = datetime(
+        2099,
+        12,
+        31,
+        23,
+        59,
+        59,
+        tzinfo=timezone.utc
     )
 
     token = secrets.token_urlsafe(
@@ -196,13 +225,14 @@ def create_user(
             blocked,
             created_at
         )
-        VALUES (?, ?, ?, ?, 0, ?, 1, 0, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)
         """,
         (
             telegram_id,
             username or "",
             token,
             None,
+            10737418240,
             expires.isoformat(),
             now.isoformat()
         )
@@ -238,158 +268,6 @@ def save_subscription_url(
     conn.close()
 
 
-def refresh_user(telegram_id):
-    user = get_user(
-        telegram_id
-    )
-
-    if not user:
-        return None
-
-    try:
-        expires = datetime.fromisoformat(
-            user["expires_at"]
-        )
-
-        if expires.tzinfo is None:
-            expires = expires.replace(
-                tzinfo=timezone.utc
-            )
-
-        now = datetime.now(
-            timezone.utc
-        )
-
-        active = int(
-            expires > now
-            and not user["blocked"]
-        )
-
-        conn = connect()
-
-        conn.execute(
-            """
-            UPDATE users
-            SET active = ?
-            WHERE telegram_id = ?
-            """,
-            (
-                active,
-                telegram_id
-            )
-        )
-
-        conn.commit()
-        conn.close()
-
-    except Exception:
-        pass
-
-    return get_user(
-        telegram_id
-    )
-
-
-def list_users():
-    conn = connect()
-
-    users = conn.execute(
-        """
-        SELECT
-            telegram_id,
-            username,
-            expires_at,
-            active,
-            blocked,
-            subscription_url
-        FROM users
-        ORDER BY id DESC
-        """
-    ).fetchall()
-
-    conn.close()
-
-    return users
-
-
-def add_days(
-    telegram_id,
-    days
-):
-    conn = connect()
-
-    try:
-        conn.execute(
-            "BEGIN IMMEDIATE"
-        )
-
-        user = conn.execute(
-            """
-            SELECT *
-            FROM users
-            WHERE telegram_id = ?
-            """,
-            (telegram_id,)
-        ).fetchone()
-
-        if not user:
-            conn.rollback()
-            return None
-
-        now = datetime.now(
-            timezone.utc
-        )
-
-        try:
-            old_expires = datetime.fromisoformat(
-                user["expires_at"]
-            )
-
-            if old_expires.tzinfo is None:
-                old_expires = old_expires.replace(
-                    tzinfo=timezone.utc
-                )
-
-        except Exception:
-            old_expires = now
-
-        if old_expires < now:
-            base_date = now
-        else:
-            base_date = old_expires
-
-        new_expires = (
-            base_date
-            + timedelta(days=days)
-        )
-
-        conn.execute(
-            """
-            UPDATE users
-            SET expires_at = ?,
-                active = 1
-            WHERE telegram_id = ?
-            """,
-            (
-                new_expires.isoformat(),
-                telegram_id
-            )
-        )
-
-        conn.commit()
-
-    except Exception:
-        conn.rollback()
-        raise
-
-    finally:
-        conn.close()
-
-    return get_user(
-        telegram_id
-    )
-
-
 def set_blocked(
     telegram_id,
     blocked
@@ -418,29 +296,62 @@ def set_blocked(
     )
 
 
-def delete_user(
+def refresh_user(
     telegram_id
 ):
+    user = get_user(
+        telegram_id
+    )
+
+    if not user:
+        return None
+
+    active = 0 if user["blocked"] else 1
+
     conn = connect()
 
     conn.execute(
         """
-        DELETE FROM promo_uses
+        UPDATE users
+        SET active = ?
         WHERE telegram_id = ?
         """,
-        (telegram_id,)
-    )
-
-    conn.execute(
-        """
-        DELETE FROM users
-        WHERE telegram_id = ?
-        """,
-        (telegram_id,)
+        (
+            active,
+            telegram_id
+        )
     )
 
     conn.commit()
     conn.close()
+
+    return get_user(
+        telegram_id
+    )
+
+
+def list_users():
+    conn = connect()
+
+    users = conn.execute(
+        """
+        SELECT
+            telegram_id,
+            username,
+            token,
+            subscription_url,
+            total_bytes,
+            active,
+            blocked,
+            created_at
+        FROM users
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+    conn.close()
+
+    return users
 
 
 def create_promo(
@@ -479,6 +390,7 @@ def create_promo(
                 code
             )
         )
+
     else:
         conn.execute(
             """
@@ -545,13 +457,18 @@ def use_promo(
 
         if not promo:
             conn.rollback()
-            return False, "Промокод не найден."
+
+            return (
+                False,
+                "Промокод не найден."
+            )
 
         if promo["uses"] >= promo["max_uses"]:
             conn.rollback()
-            return False, (
-                "Лимит использований "
-                "промокода исчерпан."
+
+            return (
+                False,
+                "Лимит использований промокода исчерпан."
             )
 
         used = conn.execute(
@@ -569,9 +486,10 @@ def use_promo(
 
         if used:
             conn.rollback()
-            return False, (
-                "Ты уже использовал "
-                "этот промокод."
+
+            return (
+                False,
+                "Ты уже использовал этот промокод."
             )
 
         now = datetime.now(
@@ -600,12 +518,19 @@ def use_promo(
             SET uses = uses + 1
             WHERE id = ?
             """,
-            (promo["id"],)
+            (
+                promo["id"],
+            )
         )
 
         conn.commit()
 
-        return True, promo["days"]
+        # В новой системе промокоды не добавляют срок.
+        # Возвращаем 0, чтобы не ломать старую БД.
+        return (
+            True,
+            0
+        )
 
     except Exception:
         conn.rollback()
