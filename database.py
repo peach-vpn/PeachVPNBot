@@ -417,6 +417,38 @@ def set_blocked(
     )
 
 
+def replace_token(
+    telegram_id,
+    new_token,
+    expires_at
+):
+    conn = connect()
+
+    conn.execute(
+        """
+        UPDATE users
+        SET token = ?,
+            subscription_url = NULL,
+            expires_at = ?,
+            active = 1,
+            expired_page = 0
+        WHERE telegram_id = ?
+        """,
+        (
+            new_token,
+            str(expires_at),
+            telegram_id
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+    return get_user(
+        telegram_id
+    )
+
+
 def list_users():
     conn = connect()
 
