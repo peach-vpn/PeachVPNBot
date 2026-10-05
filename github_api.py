@@ -33,6 +33,11 @@ def headers():
 
 
 def get_file(path):
+    if not GITHUB_TOKEN:
+        raise RuntimeError(
+            "GITHUB_TOKEN не задан"
+        )
+
     request = urllib.request.Request(
         api_url(path),
         headers=headers()
@@ -44,14 +49,26 @@ def get_file(path):
             timeout=30
         ) as response:
             return json.loads(
-                response.read().decode("utf-8")
+                response.read().decode(
+                    "utf-8"
+                )
             )
 
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return None
 
-        raise
+        body = error.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        raise RuntimeError(
+            "GitHub API "
+            + str(error.code)
+            + ": "
+            + body
+        )
 
 
 def put_file(
@@ -74,8 +91,11 @@ def put_file(
         "branch": GITHUB_BRANCH,
     }
 
-    if old_file and old_file.get("sha"):
-        payload["sha"] = old_file["sha"]
+    if old_file:
+        sha = old_file.get("sha")
+
+        if sha:
+            payload["sha"] = sha
 
     data = json.dumps(
         payload
@@ -92,55 +112,29 @@ def put_file(
         method="PUT"
     )
 
-    with urllib.request.urlopen(
-        request,
-        timeout=30
-    ) as response:
-        return json.loads(
-            response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=30
+        ) as response:
+            return json.loads(
+                response.read().decode(
+                    "utf-8"
+                )
+            )
+
+    except urllib.error.HTTPError as error:
+        body = error.read().decode(
+            "utf-8",
+            errors="replace"
         )
 
-
-def delete_file(
-    path,
-    message
-):
-    if not GITHUB_TOKEN:
         raise RuntimeError(
-            "GITHUB_TOKEN не задан"
+            "GitHub API "
+            + str(error.code)
+            + ": "
+            + body
         )
-
-    old_file = get_file(path)
-
-    if not old_file:
-        return False
-
-    payload = {
-        "message": message,
-        "sha": old_file["sha"],
-        "branch": GITHUB_BRANCH,
-    }
-
-    data = json.dumps(
-        payload
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-        api_url(path),
-        data=data,
-        headers={
-            **headers(),
-            "Content-Type":
-                "application/json"
-        },
-        method="DELETE"
-    )
-
-    with urllib.request.urlopen(
-        request,
-        timeout=30
-    ):
-        return True
 
 
 def raw_subscription_url(token):
