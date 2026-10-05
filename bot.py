@@ -32,7 +32,6 @@ from database import (
 
 from github_api import (
     put_file,
-    delete_file,
     raw_subscription_url,
     subscription_path,
 )
@@ -41,10 +40,6 @@ from github_api import (
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-
-# =========================================================
-# НАСТРОЙКИ
-# =========================================================
 
 PROFILE_TITLE = "🍑 Персик VPN"
 
@@ -58,6 +53,8 @@ ANNOUNCE = (
 UPDATE_INTERVAL = 1
 
 NODES_FILE = "nodes.txt"
+
+admin_states = {}
 
 
 # =========================================================
@@ -80,12 +77,6 @@ def main_keyboard(is_admin=False):
         ],
         [
             InlineKeyboardButton(
-                text="🔄 Обновить подписку",
-                callback_data="refresh"
-            )
-        ],
-        [
-            InlineKeyboardButton(
                 text="❓ Помощь",
                 callback_data="help"
             )
@@ -102,6 +93,31 @@ def main_keyboard(is_admin=False):
 
     return InlineKeyboardMarkup(
         inline_keyboard=buttons
+    )
+
+
+def subscription_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить подписку",
+                    callback_data="refresh"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить подписку",
+                    callback_data="delete_my_subscription"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data="back"
+                )
+            ],
+        ]
     )
 
 
@@ -173,11 +189,23 @@ def admin_keyboard():
     )
 
 
-# =========================================================
-# СОСТОЯНИЕ АДМИНА
-# =========================================================
-
-admin_states = {}
+def delete_confirm_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Да, удалить",
+                    callback_data="confirm_delete_my_subscription"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="subscription"
+                )
+            ],
+        ]
+    )
 
 
 # =========================================================
@@ -314,7 +342,7 @@ def github_invalidate_subscription(user):
 
 
 # =========================================================
-# ТЕКСТ ГЛАВНОГО МЕНЮ
+# ГЛАВНОЕ МЕНЮ
 # =========================================================
 
 def main_text(user):
@@ -338,6 +366,11 @@ def main_text(user):
         expires = datetime.fromisoformat(
             user["expires_at"]
         )
+
+        if expires.tzinfo is None:
+            expires = expires.replace(
+                tzinfo=timezone.utc
+            )
 
         now = datetime.now(
             timezone.utc
@@ -372,7 +405,7 @@ def main_text(user):
         "🍑 ПЕРСИК VPN\n\n"
         + status
         + "\n"
-        "🆓 Подписка: Free\n"
+        "🟢 Подписка: Free\n"
         "📅 До: "
         + date_text
         + "\n"
@@ -383,7 +416,7 @@ def main_text(user):
 
 
 # =========================================================
-# СТРАНИЦА ПОДПИСКИ
+# МОЯ ПОДПИСКА
 # =========================================================
 
 def subscription_text(user):
@@ -400,6 +433,11 @@ def subscription_text(user):
         expires = datetime.fromisoformat(
             user["expires_at"]
         )
+
+        if expires.tzinfo is None:
+            expires = expires.replace(
+                tzinfo=timezone.utc
+            )
 
         now = datetime.now(
             timezone.utc
@@ -456,7 +494,7 @@ def subscription_text(user):
 
 
 # =========================================================
-# ГЛАВНОЕ МЕНЮ
+# START
 # =========================================================
 
 @dp.message(CommandStart())
@@ -472,21 +510,16 @@ async def start(message: Message):
             user
         )
 
-        current = get_user(
-            message.from_user.id
+        from database import save_subscription_url
+
+        save_subscription_url(
+            message.from_user.id,
+            url
         )
 
-        if current and current["subscription_url"] != url:
-            from database import save_subscription_url
-
-            save_subscription_url(
-                message.from_user.id,
-                url
-            )
-
-            user = get_user(
-                message.from_user.id
-            )
+        user = get_user(
+            message.from_user.id
+        )
 
     except Exception:
         pass
@@ -500,7 +533,7 @@ async def start(message: Message):
 
 
 # =========================================================
-# CALLBACK: НАЗАД
+# НАЗАД
 # =========================================================
 
 @dp.callback_query(F.data == "back")
@@ -545,7 +578,7 @@ async def subscription(
 
     await callback.message.edit_text(
         subscription_text(user),
-        reply_markup=back_keyboard()
+        reply_markup=subscription_keyboard()
     )
 
     await callback.answer()
@@ -564,10 +597,11 @@ async def refresh_subscription(
     )
 
     if not user:
-        user = create_user(
-            callback.from_user.id,
-            callback.from_user.username
+        await callback.answer(
+            "Подписка не найдена.",
+            show_alert=True
         )
+        return
 
     try:
         url = await asyncio.to_thread(
@@ -587,21 +621,114 @@ async def refresh_subscription(
         )
 
         await callback.message.edit_text(
-            "✅ Подписка обновлена.\n\n"
-            "Новая версия подписки уже "
-            "загружена на GitHub.\n\n"
-            + subscription_text(user),
-            reply_markup=back_keyboard()
+            subscription_text(user),
+            reply_markup=subscription_keyboard()
+        )
+
+        await callback.answer(
+            "✅ Подписка обновлена."
         )
 
     except Exception as error:
+        await callback.answer(
+            "❌ Ошибка обновления.",
+            show_alert=True
+        )
+
         await callback.message.edit_text(
             "❌ Не удалось обновить подписку.\n\n"
+            + str(error),
+            reply_markup=subscription_keyboard()
+        )
+
+
+# =========================================================
+# УДАЛИТЬ СВОЮ ПОДПИСКУ
+# =========================================================
+
+@dp.callback_query(
+    F.data == "delete_my_subscription"
+)
+async def delete_my_subscription(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
+
+    if not user:
+        await callback.answer(
+            "Подписка уже отсутствует.",
+            show_alert=True
+        )
+        return
+
+    await callback.message.edit_text(
+        "🗑 УДАЛЕНИЕ ПОДПИСКИ\n\n"
+        "Ты действительно хочешь удалить "
+        "свою подписку?\n\n"
+        "После удаления ссылка перестанет "
+        "содержать активные серверы.",
+        reply_markup=delete_confirm_keyboard()
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
+# =========================================================
+
+@dp.callback_query(
+    F.data == "confirm_delete_my_subscription"
+)
+async def confirm_delete_my_subscription(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
+
+    if not user:
+        await callback.message.edit_text(
+            "❌ Подписка уже удалена.",
+            reply_markup=back_keyboard()
+        )
+
+        await callback.answer()
+        return
+
+    try:
+        await asyncio.to_thread(
+            github_invalidate_subscription,
+            user
+        )
+    except Exception as error:
+        await callback.message.edit_text(
+            "❌ Не удалось отключить подписку.\n\n"
             + str(error),
             reply_markup=back_keyboard()
         )
 
-    await callback.answer()
+        await callback.answer()
+        return
+
+    delete_user(
+        callback.from_user.id
+    )
+
+    await callback.message.edit_text(
+        "🗑 Подписка удалена.\n\n"
+        "Ссылка больше не содержит "
+        "активные серверы.\n\n"
+        "Если ты добавлял её в Happ, "
+        "удали профиль там вручную.",
+        reply_markup=back_keyboard()
+    )
+
+    await callback.answer(
+        "Подписка удалена."
+    )
 
 
 # =========================================================
@@ -612,15 +739,15 @@ async def refresh_subscription(
 async def promo_button(
     callback: CallbackQuery
 ):
+    admin_states[
+        callback.from_user.id
+    ] = "promo_user"
+
     await callback.message.edit_text(
         "🎟 ПРОМОКОД\n\n"
         "Отправь промокод следующим сообщением.",
         reply_markup=back_keyboard()
     )
-
-    admin_states[
-        callback.from_user.id
-    ] = "promo_user"
 
     await callback.answer()
 
@@ -638,8 +765,8 @@ async def help_button(
         "🍑 Персик VPN — бесплатный VPN.\n\n"
         "📦 Моя подписка — посмотреть срок "
         "и ссылку подписки.\n\n"
-        "🔄 Обновить подписку — вручную "
-        "обновить конфигурацию.\n\n"
+        "🔄 Обновить подписку — находится "
+        "в разделе «Моя подписка».\n\n"
         "🎟 Промокод — активировать код "
         "на дополнительные дни.\n\n"
         "Если сервер временно не работает, "
@@ -784,7 +911,7 @@ async def admin_add_days_button(
 
 
 # =========================================================
-# УДАЛИТЬ ПОДПИСКУ
+# АДМИН УДАЛЕНИЕ
 # =========================================================
 
 @dp.callback_query(F.data == "admin_delete")
@@ -952,7 +1079,7 @@ async def admin_promos(
 
 
 # =========================================================
-# ОБРАБОТКА ТЕКСТА
+# ТЕКСТОВЫЕ КОМАНДЫ
 # =========================================================
 
 @dp.message(F.text)
@@ -967,9 +1094,9 @@ async def text_handler(
 
     text = message.text.strip()
 
-    # -----------------------------------------------------
+    # =====================================================
     # АДМИН: ВЫДАТЬ ДНИ
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1020,26 +1147,20 @@ async def text_handler(
             return
 
         try:
-            # 1. Меняем срок в БД
-            updated = add_days(
+            add_days(
                 target_id,
                 days
             )
 
-            # 2. Берём уже обновлённого
-            # пользователя
             updated = get_user(
                 target_id
             )
 
-            # 3. СРАЗУ перезаписываем
-            # GitHub subscription
             url = await asyncio.to_thread(
                 github_update_subscription,
                 updated
             )
 
-            # 4. Сохраняем URL
             from database import save_subscription_url
 
             save_subscription_url(
@@ -1047,7 +1168,6 @@ async def text_handler(
                 url
             )
 
-            # 5. Берём свежие данные
             updated = get_user(
                 target_id
             )
@@ -1055,6 +1175,11 @@ async def text_handler(
             expires = datetime.fromisoformat(
                 updated["expires_at"]
             )
+
+            if expires.tzinfo is None:
+                expires = expires.replace(
+                    tzinfo=timezone.utc
+                )
 
             expire_unix = int(
                 expires.timestamp()
@@ -1082,8 +1207,8 @@ async def text_handler(
 
         except Exception as error:
             await message.answer(
-                "❌ Дни изменились в базе, "
-                "но GitHub не обновился.\n\n"
+                "❌ Не удалось обновить "
+                "подписку на GitHub.\n\n"
                 + str(error)
             )
 
@@ -1094,9 +1219,9 @@ async def text_handler(
 
         return
 
-    # -----------------------------------------------------
-    # АДМИН: УДАЛИТЬ
-    # -----------------------------------------------------
+    # =====================================================
+    # АДМИН: УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ
+    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1125,26 +1250,24 @@ async def text_handler(
                 github_invalidate_subscription,
                 target
             )
+
+            delete_user(
+                target_id
+            )
+
+            await message.answer(
+                "🗑 Подписка удалена.\n\n"
+                "ID: "
+                + str(target_id)
+                + "\n"
+                "☁️ GitHub-файл отключён."
+            )
+
         except Exception as error:
             await message.answer(
-                "❌ Не удалось отключить "
-                "подписку на GitHub.\n\n"
+                "❌ Ошибка удаления:\n\n"
                 + str(error)
             )
-            return
-
-        delete_user(
-            target_id
-        )
-
-        await message.answer(
-            "🗑 Подписка удалена.\n\n"
-            "ID: "
-            + str(target_id)
-            + "\n\n"
-            "Ссылка на GitHub больше "
-            "не содержит активные серверы."
-        )
 
         admin_states.pop(
             user_id,
@@ -1153,9 +1276,9 @@ async def text_handler(
 
         return
 
-    # -----------------------------------------------------
+    # =====================================================
     # АДМИН: БЛОК
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1184,23 +1307,23 @@ async def text_handler(
                 github_invalidate_subscription,
                 target
             )
+
+            set_blocked(
+                target_id,
+                True
+            )
+
+            await message.answer(
+                "🚫 Пользователь заблокирован.\n\n"
+                "ID: "
+                + str(target_id)
+            )
+
         except Exception as error:
             await message.answer(
-                "❌ Ошибка GitHub:\n"
+                "❌ Ошибка GitHub:\n\n"
                 + str(error)
             )
-            return
-
-        set_blocked(
-            target_id,
-            True
-        )
-
-        await message.answer(
-            "🚫 Пользователь заблокирован.\n\n"
-            "ID: "
-            + str(target_id)
-        )
 
         admin_states.pop(
             user_id,
@@ -1209,9 +1332,9 @@ async def text_handler(
 
         return
 
-    # -----------------------------------------------------
+    # =====================================================
     # АДМИН: РАЗБЛОК
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1235,12 +1358,12 @@ async def text_handler(
             )
             return
 
-        updated = set_blocked(
-            target_id,
-            False
-        )
-
         try:
+            set_blocked(
+                target_id,
+                False
+            )
+
             updated = get_user(
                 target_id
             )
@@ -1257,27 +1380,20 @@ async def text_handler(
                 url
             )
 
+            await message.answer(
+                "✅ Пользователь разблокирован.\n\n"
+                "ID: "
+                + str(target_id)
+                + "\n"
+                "☁️ Подписка обновлена."
+            )
+
         except Exception as error:
             await message.answer(
                 "⚠️ Пользователь разблокирован, "
                 "но GitHub не обновился.\n\n"
                 + str(error)
             )
-
-            admin_states.pop(
-                user_id,
-                None
-            )
-
-            return
-
-        await message.answer(
-            "✅ Пользователь разблокирован.\n\n"
-            "ID: "
-            + str(target_id)
-            + "\n"
-            "☁️ Подписка обновлена."
-        )
 
         admin_states.pop(
             user_id,
@@ -1286,9 +1402,9 @@ async def text_handler(
 
         return
 
-    # -----------------------------------------------------
+    # =====================================================
     # АДМИН: ПРОМОКОД
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1364,9 +1480,9 @@ async def text_handler(
 
         return
 
-    # -----------------------------------------------------
+    # =====================================================
     # ПОЛЬЗОВАТЕЛЬ: ПРОМОКОД
-    # -----------------------------------------------------
+    # =====================================================
 
     if state == "promo_user":
         success, result = use_promo(
@@ -1394,7 +1510,7 @@ async def text_handler(
             )
 
         try:
-            updated = add_days(
+            add_days(
                 user_id,
                 days
             )
@@ -1415,6 +1531,10 @@ async def text_handler(
                 url
             )
 
+            updated = get_user(
+                user_id
+            )
+
             await message.answer(
                 "🎉 Промокод активирован!\n\n"
                 "➕ Добавлено: "
@@ -1423,9 +1543,7 @@ async def text_handler(
                 + subscription_text(
                     updated
                 ),
-                reply_markup=main_keyboard(
-                    user_id == ADMIN_ID
-                )
+                reply_markup=subscription_keyboard()
             )
 
         except Exception as error:
@@ -1442,9 +1560,9 @@ async def text_handler(
 
         return
 
-    # -----------------------------------------------------
+    # =====================================================
     # НЕИЗВЕСТНЫЙ ТЕКСТ
-    # -----------------------------------------------------
+    # =====================================================
 
     user = get_user(
         user_id
