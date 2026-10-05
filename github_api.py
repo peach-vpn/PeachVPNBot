@@ -44,7 +44,7 @@ def get_file(path):
             timeout=30
         ) as response:
             return json.loads(
-                response.read().decode()
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
@@ -86,8 +86,7 @@ def put_file(
         data=data,
         headers={
             **headers(),
-            "Content-Type":
-                "application/json"
+            "Content-Type": "application/json"
         },
         method="PUT"
     )
@@ -97,7 +96,7 @@ def put_file(
         timeout=30
     ) as response:
         return json.loads(
-            response.read().decode()
+            response.read().decode("utf-8")
         )
 
 
@@ -130,8 +129,7 @@ def delete_file(
         data=data,
         headers={
             **headers(),
-            "Content-Type":
-                "application/json"
+            "Content-Type": "application/json"
         },
         method="DELETE"
     )
@@ -139,18 +137,16 @@ def delete_file(
     with urllib.request.urlopen(
         request,
         timeout=30
-    ) as response:
+    ):
         return True
 
 
 def raw_subscription_url(token):
     return (
-        "https://raw.githubusercontent.com/"
+        "https://"
         + GITHUB_OWNER
-        + "/"
+        + ".github.io/"
         + GITHUB_REPO
-        + "/"
-        + GITHUB_BRANCH
         + "/"
         + SUBSCRIPTIONS_DIR
         + "/"
