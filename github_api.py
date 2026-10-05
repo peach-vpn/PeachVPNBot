@@ -35,9 +35,7 @@ def headers():
 
 def get_file(path):
     if not GITHUB_TOKEN:
-        raise RuntimeError(
-            "GITHUB_TOKEN не задан."
-        )
+        raise RuntimeError("GITHUB_TOKEN не задан.")
 
     request = urllib.request.Request(
         api_url(path),
@@ -76,33 +74,21 @@ def get_file_content(path):
     if not data:
         return None
 
-    content = data.get(
-        "content",
-        "",
-    )
-
-    content = content.replace(
-        "\n",
-        "",
-    )
+    content = data.get("content", "")
+    content = content.replace("\n", "")
 
     try:
         return base64.b64decode(
             content
         ).decode("utf-8")
+
     except Exception:
         return None
 
 
-def put_file(
-    path,
-    content,
-    message,
-):
+def put_file(path, content, message):
     if not GITHUB_TOKEN:
-        raise RuntimeError(
-            "GITHUB_TOKEN не задан."
-        )
+        raise RuntimeError("GITHUB_TOKEN не задан.")
 
     old_file = get_file(path)
 
@@ -159,9 +145,7 @@ def put_file(
 
 def delete_file(path, message):
     if not GITHUB_TOKEN:
-        raise RuntimeError(
-            "GITHUB_TOKEN не задан."
-        )
+        raise RuntimeError("GITHUB_TOKEN не задан.")
 
     old_file = get_file(path)
 
@@ -171,9 +155,7 @@ def delete_file(path, message):
     sha = old_file.get("sha")
 
     if not sha:
-        raise RuntimeError(
-            "Не найден SHA файла."
-        )
+        raise RuntimeError("Не найден SHA файла.")
 
     payload = {
         "message": message,
@@ -241,13 +223,17 @@ def subscription_path(token):
     )
 
 
+# =========================================================
+# ЗАГРУЗКА ВСЕХ СЕРВЕРОВ ИЗ nodes.txt
+# =========================================================
+
 def get_nodes():
-    content = get_file_content(
-        "nodes.txt"
-    )
+    content = get_file_content("nodes.txt")
 
     if not content:
-        return []
+        raise RuntimeError(
+            "GitHub не вернул nodes.txt."
+        )
 
     nodes = []
 
@@ -260,15 +246,29 @@ def get_nodes():
         if line.startswith("#"):
             continue
 
-        if (
-            line.startswith("vless://")
-            or line.startswith("hysteria2://")
-            or line.startswith("hy2://")
-        ):
+        if line.startswith("vless://"):
             nodes.append(line)
+            continue
+
+        if line.startswith("hysteria2://"):
+            nodes.append(line)
+            continue
+
+        if line.startswith("hy2://"):
+            nodes.append(line)
+            continue
+
+    if not nodes:
+        raise RuntimeError(
+            "В nodes.txt не найдено ни одного сервера."
+        )
 
     return nodes
 
+
+# =========================================================
+# АКТИВНАЯ ПОДПИСКА
+# =========================================================
 
 def build_active_subscription(
     token,
@@ -276,16 +276,11 @@ def build_active_subscription(
 ):
     nodes = get_nodes()
 
-    if not nodes:
-        raise RuntimeError(
-            "В nodes.txt нет серверов."
-        )
-
     lines = [
         'id="' + token[:6] + '"',
-
+        "",
         "#profile-title: 🍑 Персик VPN",
-
+        "",
         (
             "#announce: 🆓 Бесплатный VPN | "
             "🇳🇱 Нидерланды • 🇩🇪 Германия | "
@@ -293,7 +288,7 @@ def build_active_subscription(
             "🔄 Серверы могут меняться "
             "и временно отключаться"
         ),
-
+        "",
         (
             "#subscription-userinfo: "
             "upload=0; "
@@ -302,21 +297,33 @@ def build_active_subscription(
             "expire="
             + str(expires_at)
         ),
-
+        "",
         "#profile-update-interval: 1",
-
         "",
     ]
 
+    # ВАЖНО:
+    # Добавляем ВСЕ найденные серверы.
+    # Никаких [:1], [:4], [:5] и т.д.
     lines.extend(nodes)
 
     return "\n".join(lines) + "\n"
 
 
+# =========================================================
+# ПРОВЕРКА КОЛИЧЕСТВА СЕРВЕРОВ
+# =========================================================
+
+def get_nodes_count():
+    return len(get_nodes())
+
+
+# =========================================================
+# СЛУЧАЙНЫЙ VLESS ДЛЯ ИСТЁКШЕЙ ПОДПИСКИ
+# =========================================================
+
 def random_vless():
-    random_uuid = str(
-        uuid.uuid4()
-    )
+    random_uuid = str(uuid.uuid4())
 
     random_host = (
         "node-"
@@ -336,6 +343,10 @@ def random_vless():
     )
 
 
+# =========================================================
+# ИСТЁКШАЯ ПОДПИСКА
+# =========================================================
+
 def build_expired_subscription():
     return (
         "Подписка закончилась "
@@ -344,6 +355,10 @@ def build_expired_subscription():
         + "\n"
     )
 
+
+# =========================================================
+# ПУБЛИКАЦИЯ АКТИВНОЙ ПОДПИСКИ
+# =========================================================
 
 def publish_active(
     token,
@@ -358,13 +373,18 @@ def publish_active(
         subscription_path(token),
         content,
         "Update subscription "
-        + token[:6],
+        + token[:6]
+        + " ("
+        + str(get_nodes_count())
+        + " nodes)",
     )
 
-    return raw_subscription_url(
-        token
-    )
+    return raw_subscription_url(token)
 
+
+# =========================================================
+# ПУБЛИКАЦИЯ ИСТЁКШЕЙ ПОДПИСКИ
+# =========================================================
 
 def publish_expired(token):
     put_file(
@@ -374,14 +394,16 @@ def publish_expired(token):
         + token[:6],
     )
 
-    return raw_subscription_url(
-        token
-    )
+    return raw_subscription_url(token)
 
+
+# =========================================================
+# УДАЛЕНИЕ ПОДПИСКИ
+# =========================================================
 
 def delete_subscription(token):
     return delete_file(
         subscription_path(token),
         "Delete subscription "
         + token[:6],
-    )
+        )
