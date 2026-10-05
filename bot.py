@@ -14,26 +14,25 @@ from aiogram.utils.keyboard import (
 from config import (
     BOT_TOKEN,
     ADMIN_ID,
-    ISSUE_DAYS
+    SUBSCRIPTION_DAYS,
+    EXPIRED_WARNING_HOURS,
+    CHECK_INTERVAL_SECONDS
 )
 
 from database import (
     init_db,
     create_user,
     get_user,
-    save_subscription_url,
     activate_subscription,
-    can_get_subscription,
-    next_issue_days,
-    deactivate_expired,
-    list_users,
-    set_blocked
+    save_subscription_url,
+    set_expired_page,
+    set_blocked,
+    list_users
 )
 
 from github_api import (
-    publish_subscription,
-    get_file_content,
-    subscription_path
+    publish_active,
+    publish_expired
 )
 
 
@@ -44,9 +43,7 @@ bot = Bot(
 dp = Dispatcher()
 
 
-def main_keyboard(
-    user_id
-):
+def main_keyboard(user_id):
     builder = InlineKeyboardBuilder()
 
     builder.button(
@@ -84,16 +81,6 @@ def admin_keyboard():
     )
 
     builder.button(
-        text="🚫 Заблокировать",
-        callback_data="admin_block_help"
-    )
-
-    builder.button(
-        text="🔓 Разблокировать",
-        callback_data="admin_unblock_help"
-    )
-
-    builder.button(
         text="⬅️ Назад",
         callback_data="back"
     )
@@ -103,18 +90,40 @@ def admin_keyboard():
     return builder.as_markup()
 
 
+def now_timestamp():
+    return int(
+        datetime.now(
+            timezone.utc
+        ).timestamp()
+    )
+
+
 def format_date(timestamp):
     if not timestamp:
-        return "—"
+        return "не выдана"
 
-    date = datetime.fromtimestamp(
+    dt = datetime.fromtimestamp(
         int(timestamp),
         timezone.utc
     )
 
-    return date.strftime(
+    return dt.strftime(
         "%d.%m.%Y %H:%M"
     )
+
+
+def subscription_active(user):
+    if not user:
+        return False
+
+    if int(user["blocked"]) == 1:
+        return False
+
+    expires = int(
+        user["expires_at"]
+    )
+
+    return expires > now_timestamp()
 
 
 def build_home_text(user):
@@ -130,79 +139,150 @@ def build_home_text(user):
             "🔴 Ты заблокирован."
         )
 
-    now = int(
-        datetime.now(
-            timezone.utc
-        ).timestamp()
-    )
-
     expires = int(
         user["expires_at"]
     )
 
-    if expires > now:
-        status = "🟢 Активна"
-        until = format_date(expires)
-    else:
-        status = "🔴 Не активна"
-        until = "истекла"
-
-    count = int(
-        user["issue_count"]
-    )
-
-    if count == 0:
-        next_days = 30
-    elif count == 1:
-        next_days = 15
-    elif count == 2:
-        next_days = 7
-    else:
-        next_days = None
-
-    if next_days:
-        next_text = (
-            "Следующая выдача: "
-            + str(next_days)
-            + " дней"
-        )
-    else:
-        next_text = (
-            "Выдачи закончились"
+    if expires > now_timestamp():
+        return (
+            "🍑 ПЕРСИК VPN\n\n"
+            "🟢 Подписка: Free\n"
+            "📅 До: "
+            + format_date(expires)
+            + "\n"
+            "📦 Трафик: Безлимит\n"
+            "🌍 Серверов: 4\n\n"
+            "👇 Выбери действие:"
         )
 
     return (
         "🍑 ПЕРСИК VPN\n\n"
-        + status
-        + "\n"
-        + "📅 До: "
-        + until
-        + "\n"
-        + "📦 Трафик: Безлимит\n"
-        + "🌍 Серверов: 4\n\n"
-        + "🎁 Выдачи: "
-        + str(count)
-        + "/3\n"
-        + next_text
-        + "\n\n"
-        + "👇 Выбери действие:"
+        "🔴 Подписка закончилась.\n\n"
+        "👇 Выбери действие:"
     )
 
 
-async def ensure_user(message):
-    user = create_user(
-        message.from_user.id,
-        message.from_user.username
+async def get_or_create_user(
+    telegram_id,
+    username
+):
+    user = get_user(
+        telegram_id
     )
+
+    if not user:
+        user = create_user(
+            telegram_id,
+            username
+        )
 
     return user
+
+
+async def update_expired_subscriptions():
+    while True:
+        try:
+            users = list_users()
+
+            now = now_timestamp()
+
+            warning_seconds = (
+                EXPIRED_WARNING_HOURS
+                * 60
+                * 60
+            )
+
+            for user in users:
+                if int(user["blocked"]) == 1:
+                    continue
+
+                expires = int(
+                    user["expires_at"]
+                )
+
+                if expires <= 0:
+                    continue
+
+                remaining = (
+                    expires - now
+                )
+
+                # Последние 24 часа.
+                if (
+                    remaining <= warning_seconds
+                    and remaining > 0
+                    and int(user["expired_page"]) == 0
+                ):
+                    try:
+                        url = publish_expired(
+                            user["token"]
+                        )
+
+                        save_subscription_url(
+                            user["telegram_id"],
+                            url
+                        )
+
+                        set_expired_page(
+                            user["telegram_id"],
+                            True
+                        )
+
+                    except Exception as error:
+                        print(
+                            "Ошибка переключения "
+                            "подписки "
+                            + str(user["telegram_id"])
+                            + ": "
+                            + str(error)
+                        )
+
+                # Полностью закончилась.
+                elif (
+                    remaining <= 0
+                    and int(user["expired_page"]) == 0
+                ):
+                    try:
+                        url = publish_expired(
+                            user["token"]
+                        )
+
+                        save_subscription_url(
+                            user["telegram_id"],
+                            url
+                        )
+
+                        set_expired_page(
+                            user["telegram_id"],
+                            True
+                        )
+
+                    except Exception as error:
+                        print(
+                            "Ошибка окончания "
+                            "подписки "
+                            + str(user["telegram_id"])
+                            + ": "
+                            + str(error)
+                        )
+
+        except Exception as error:
+            print(
+                "Ошибка фоновой проверки: "
+                + str(error)
+            )
+
+        await asyncio.sleep(
+            CHECK_INTERVAL_SECONDS
+        )
 
 
 @dp.message(CommandStart())
 async def start(message: Message):
     try:
-        user = await ensure_user(
-            message
+        user = await get_or_create_user(
+            message.from_user.id,
+            message.from_user.username
         )
 
         await message.answer(
@@ -221,15 +301,10 @@ async def start(message: Message):
 
 @dp.callback_query(F.data == "back")
 async def back(callback: CallbackQuery):
-    user = get_user(
-        callback.from_user.id
+    user = await get_or_create_user(
+        callback.from_user.id,
+        callback.from_user.username
     )
-
-    if not user:
-        user = create_user(
-            callback.from_user.id,
-            callback.from_user.username
-        )
 
     await callback.message.edit_text(
         build_home_text(user),
@@ -245,46 +320,34 @@ async def back(callback: CallbackQuery):
 async def subscription(
     callback: CallbackQuery
 ):
-    user = get_user(
-        callback.from_user.id
-    )
-
-    if not user:
-        user = create_user(
-            callback.from_user.id,
-            callback.from_user.username
-        )
-
-    now = int(
-        datetime.now(
-            timezone.utc
-        ).timestamp()
+    user = await get_or_create_user(
+        callback.from_user.id,
+        callback.from_user.username
     )
 
     expires = int(
         user["expires_at"]
     )
 
-    if expires > now:
-        status = "🟢 Активна"
-        until = format_date(expires)
+    if expires > now_timestamp():
+        text = (
+            "🍑 МОЯ ПОДПИСКА\n\n"
+            "🟢 Статус: Активна\n"
+            "📅 До: "
+            + format_date(expires)
+            + "\n"
+            "📦 Трафик: Безлимит\n"
+            "🌍 Серверов: 4\n\n"
+            "🔗 Ссылка постоянная."
+        )
     else:
-        status = "🔴 Не активна"
-        until = "истекла"
-
-    text = (
-        "🍑 МОЯ ПОДПИСКА\n\n"
-        + status
-        + "\n"
-        + "📅 До: "
-        + until
-        + "\n"
-        + "📦 Трафик: Безлимит\n"
-        + "🌍 Серверов: 4\n\n"
-        + "🎁 Использовано выдач: "
-        + str(user["issue_count"])
-        + "/3"
-    )
+        text = (
+            "🍑 МОЯ ПОДПИСКА\n\n"
+            "🔴 Статус: Закончилась\n"
+            "📦 Трафик: Безлимит\n\n"
+            "Повторная бесплатная выдача "
+            "не предусмотрена."
+        )
 
     await callback.message.edit_text(
         text,
@@ -296,74 +359,16 @@ async def subscription(
     await callback.answer()
 
 
-@dp.callback_query(F.data == "my_link")
-async def my_link(
-    callback: CallbackQuery
-):
-    user = get_user(
-        callback.from_user.id
-    )
-
-    if not user:
-        user = create_user(
-            callback.from_user.id,
-            callback.from_user.username
-        )
-
-    url = user["subscription_url"]
-
-    if not url:
-        try:
-            expires = int(
-                user["expires_at"]
-            )
-
-            url = publish_subscription(
-                user["token"],
-                expires
-            )
-
-            save_subscription_url(
-                callback.from_user.id,
-                url
-            )
-
-        except Exception as error:
-            await callback.answer(
-                "Ошибка GitHub",
-                show_alert=True
-            )
-
-            await callback.message.answer(
-                "❌ Не удалось получить ссылку:\n"
-                + str(error)
-            )
-
-            return
-
-    await callback.message.answer(
-        "🔗 Твоя ссылка Happ:\n\n"
-        + url
-    )
-
-    await callback.answer()
-
-
 @dp.callback_query(
     F.data == "get_subscription"
 )
 async def get_subscription(
     callback: CallbackQuery
 ):
-    user = get_user(
-        callback.from_user.id
+    user = await get_or_create_user(
+        callback.from_user.id,
+        callback.from_user.username
     )
-
-    if not user:
-        user = create_user(
-            callback.from_user.id,
-            callback.from_user.username
-        )
 
     if int(user["blocked"]) == 1:
         await callback.answer(
@@ -372,53 +377,22 @@ async def get_subscription(
         )
         return
 
-    deactivate_expired()
-
-    user = get_user(
-        callback.from_user.id
-    )
-
-    if not can_get_subscription(
-        callback.from_user.id
-    ):
-        if int(user["issue_count"]) >= 3:
-            text = (
-                "🔴 Все бесплатные выдачи "
-                "уже использованы."
-            )
-        else:
-            text = (
-                "🟡 Текущая подписка ещё активна.\n\n"
-                "Получить новую можно после её окончания."
-            )
-
+    # Если подписка уже была выдана —
+    # повторно её получить нельзя.
+    if int(user["expires_at"]) > 0:
         await callback.answer(
-            text,
-            show_alert=True
-        )
-        return
-
-    days = next_issue_days(
-        callback.from_user.id
-    )
-
-    if days is None:
-        await callback.answer(
-            "Выдачи закончились.",
+            "Эта бесплатная подписка уже была выдана.",
             show_alert=True
         )
         return
 
     try:
-        # Сначала активируем срок.
         user = activate_subscription(
             callback.from_user.id,
-            days
+            SUBSCRIPTION_DAYS
         )
 
-        # TOKEN не меняется.
-        # Файл подписки обновляется на тот же TOKEN.
-        url = publish_subscription(
+        url = publish_active(
             user["token"],
             int(user["expires_at"])
         )
@@ -434,15 +408,15 @@ async def get_subscription(
 
         await callback.message.edit_text(
             "🍑 ПОДПИСКА ВЫДАНА\n\n"
-            "⏳ Срок: "
-            + str(days)
-            + " дней\n"
-            + "📦 Трафик: Безлимит\n"
-            + "🌍 Серверов: 4\n"
-            + "🎁 Выдача: "
-            + str(user["issue_count"])
-            + "/3\n\n"
-            "🔗 Ссылка:\n"
+            "🟢 Срок: 30 дней\n"
+            "📦 Трафик: Безлимит\n"
+            "🌍 Серверов: 4\n"
+            "📅 До: "
+            + format_date(
+                user["expires_at"]
+            )
+            + "\n\n"
+            "🔗 Твоя ссылка:\n"
             + url,
             reply_markup=main_keyboard(
                 callback.from_user.id
@@ -455,14 +429,40 @@ async def get_subscription(
 
     except Exception as error:
         await callback.answer(
-            "Ошибка",
+            "Ошибка выдачи.",
             show_alert=True
         )
 
         await callback.message.answer(
-            "❌ Ошибка выдачи:\n"
+            "❌ Ошибка:\n"
             + str(error)
         )
+
+
+@dp.callback_query(F.data == "my_link")
+async def my_link(
+    callback: CallbackQuery
+):
+    user = await get_or_create_user(
+        callback.from_user.id,
+        callback.from_user.username
+    )
+
+    url = user["subscription_url"]
+
+    if not url:
+        await callback.answer(
+            "Ссылка появится после выдачи подписки.",
+            show_alert=True
+        )
+        return
+
+    await callback.message.answer(
+        "🔗 Твоя постоянная ссылка Happ:\n\n"
+        + url
+    )
+
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "admin")
@@ -499,9 +499,11 @@ async def admin_users(
     users = list_users()
 
     if not users:
-        text = "👥 Пользователей пока нет."
+        text = (
+            "👥 Пользователей пока нет."
+        )
     else:
-        parts = [
+        lines = [
             "👥 ПОЛЬЗОВАТЕЛИ\n"
         ]
 
@@ -515,25 +517,28 @@ async def admin_users(
 
             if int(user["blocked"]) == 1:
                 status = "🚫"
-            elif int(user["active"]) == 1:
+            elif subscription_active(user):
                 status = "🟢"
-            else:
+            elif int(user["expires_at"]) > 0:
                 status = "🔴"
+            else:
+                status = "⚪"
 
-            parts.append(
+            lines.append(
                 status
                 + " "
                 + str(user["telegram_id"])
                 + " "
                 + name
                 + "\n"
-                + "Выдач: "
-                + str(user["issue_count"])
-                + "/3"
+                + "До: "
+                + format_date(
+                    user["expires_at"]
+                )
                 + "\n"
             )
 
-        text = "\n".join(parts)
+        text = "\n".join(lines)
 
     builder = InlineKeyboardBuilder()
 
@@ -545,48 +550,6 @@ async def admin_users(
     await callback.message.edit_text(
         text,
         reply_markup=builder.as_markup()
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(
-    F.data == "admin_block_help"
-)
-async def admin_block_help(
-    callback: CallbackQuery
-):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    await callback.message.answer(
-        "🚫 Для блокировки используй:\n\n"
-        "/block TELEGRAM_ID"
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(
-    F.data == "admin_unblock_help"
-)
-async def admin_unblock_help(
-    callback: CallbackQuery
-):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    await callback.message.answer(
-        "🔓 Для разблокировки используй:\n\n"
-        "/unblock TELEGRAM_ID"
     )
 
     await callback.answer()
@@ -659,6 +622,10 @@ async def main():
         )
 
     init_db()
+
+    asyncio.create_task(
+        update_expired_subscriptions()
+    )
 
     await dp.start_polling(
         bot
