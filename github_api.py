@@ -193,25 +193,27 @@ def get_nodes():
 
     nodes = []
 
-    for line in content.splitlines():
-        line = line.strip()
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
 
+        # Пустые строки пропускаем
         if not line:
             continue
 
+        # Комментарии и заголовки пропускаем
         if line.startswith("#"):
             continue
 
-        if (
-            line.startswith("vless://")
-            or line.startswith("hysteria2://")
-            or line.startswith("hy2://")
-        ):
+        # Берём только реальные VLESS-ноды
+        if line.startswith("vless://"):
             nodes.append(line)
 
-    # ВАЖНО:
-    # не ограничиваем количество серверов.
-    # nodes.txt = главный список серверов.
+        elif line.startswith("hysteria2://"):
+            nodes.append(line)
+
+        elif line.startswith("hy2://"):
+            nodes.append(line)
+
     return nodes
 
 
@@ -223,7 +225,7 @@ def build_active_subscription(
 
     if not nodes:
         raise RuntimeError(
-            "В nodes.txt нет рабочих серверов."
+            "В nodes.txt не найдено ни одного сервера."
         )
 
     lines = [
