@@ -348,7 +348,9 @@ def add_days(
 
     new_expires = (
         expires
-        + timedelta(days=days)
+        + timedelta(
+            days=days
+        )
     )
 
     conn = connect()
