@@ -1,10 +1,8 @@
 import asyncio
 import os
-import re
-from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -14,20 +12,19 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import BOT_TOKEN, ADMIN_ID
+from config import (
+    BOT_TOKEN,
+    ADMIN_ID
+)
 
 from database import (
     init_db,
     get_user,
     create_user,
+    save_subscription_url,
     refresh_user,
     list_users,
-    add_days,
-    set_blocked,
-    create_promo,
-    list_promos,
-    use_promo,
-    connect
+    set_blocked
 )
 
 from github_api import (
@@ -37,6 +34,12 @@ from github_api import (
     raw_subscription_url
 )
 
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+TOTAL_BYTES = 10737418240
 
 NODES_FILE = "nodes.txt"
 
@@ -57,82 +60,25 @@ dp = Dispatcher()
 # ============================================================
 
 class AdminStates(StatesGroup):
-    add_days = State()
-    create_promo = State()
     block_user = State()
     unblock_user = State()
-    delete_user = State()
-
-
-class UserStates(StatesGroup):
-    promo = State()
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def is_admin(user_id):
-    return int(user_id) == int(ADMIN_ID)
-
-
-def now_unix():
-    return int(
-        datetime.now(
-            timezone.utc
-        ).timestamp()
+def is_admin(
+    user_id
+):
+    return int(user_id) == int(
+        ADMIN_ID
     )
 
 
-def datetime_to_unix(value):
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        dt = datetime.fromisoformat(
-            str(value)
-        )
-
-    if dt.tzinfo is None:
-        dt = dt.replace(
-            tzinfo=timezone.utc
-        )
-
-    return int(
-        dt.timestamp()
-    )
-
-
-def format_date(timestamp):
-    try:
-        dt = datetime.fromtimestamp(
-            int(timestamp),
-            timezone.utc
-        )
-
-        return dt.strftime(
-            "%d.%m.%Y"
-        )
-
-    except Exception:
-        return "Н/Д"
-
-
-def days_left(timestamp):
-    seconds = (
-        int(timestamp)
-        - now_unix()
-    )
-
-    if seconds <= 0:
-        return 0
-
-    return int(
-        (seconds + 86399)
-        // 86400
-    )
-
-
-def username_of(message):
+def username_of(
+    message
+):
     if not message.from_user:
         return ""
 
@@ -143,7 +89,7 @@ def username_of(message):
 
 
 # ============================================================
-# GITHUB
+# NODES
 # ============================================================
 
 def read_nodes():
@@ -159,10 +105,11 @@ def read_nodes():
             encoding="utf-8"
         ) as file:
             lines = file.read().splitlines()
+
     except Exception:
         return []
 
-    nodes = []
+    result = []
 
     for line in lines:
         line = line.strip()
@@ -173,31 +120,36 @@ def read_nodes():
         if line.startswith("#"):
             continue
 
-        nodes.append(line)
+        result.append(line)
 
-    return nodes
+    return result
 
+
+# ============================================================
+# SUBSCRIPTION
+# ============================================================
 
 def build_subscription(
-    user,
-    expire_timestamp
+    user
 ):
-    token = user["token"]
-
     lines = [
-        'id="' + token[:6] + '"',
+        'id="' + user["token"][:6] + '"',
+
         "#profile-title: 🍑 Персик VPN",
+
         "#announce: 🆓 Бесплатный VPN | "
         "🇳🇱 Нидерланды • "
         "🇩🇪 Германия • "
         "🇰🇿 Казахстан",
+
         "#subscription-userinfo: "
         "upload=0; "
         "download=0; "
-        "total=0; "
-        "expire="
-        + str(int(expire_timestamp)),
+        "total="
+        + str(TOTAL_BYTES),
+
         "#profile-update-interval: 1",
+
         ""
     ]
 
@@ -212,40 +164,76 @@ def build_subscription(
     )
 
 
-def get_github_expire(
-    token
+def create_or_check_subscription(
+    user
 ):
+    path = subscription_path(
+        user["token"]
+    )
+
+    existing = get_file_content(
+        path
+    )
+
+    if existing:
+        return (
+            existing,
+            False
+        )
+
+    content = build_subscription(
+        user
+    )
+
+    put_file_verified(
+        path,
+        content,
+        "Create permanent subscription "
+        + str(user["telegram_id"])
+    )
+
+    return (
+        content,
+        True
+    )
+
+
+def check_subscription(
+    user
+):
+    path = subscription_path(
+        user["token"]
+    )
+
     content = get_file_content(
-        subscription_path(token)
+        path
     )
 
     if not content:
-        return None
+        return False
 
-    match = re.search(
-        r"(?m)^#subscription-userinfo:.*?expire=(\d+)",
-        content
+    # Проверяем, что файл реально содержит
+    # subscription-userinfo.
+    if "#subscription-userinfo:" not in content:
+        return False
+
+    # Проверяем лимит 10 ГБ.
+    expected = (
+        "total="
+        + str(TOTAL_BYTES)
     )
 
-    if not match:
-        return None
+    if expected not in content:
+        return False
 
-    return int(
-        match.group(1)
-    )
+    return True
 
 
-def update_github(
-    user,
-    expire_timestamp
+def update_subscription(
+    user
 ):
-    expire_timestamp = int(
-        expire_timestamp
-    )
-
     content = build_subscription(
-        user,
-        expire_timestamp
+        user
     )
 
     put_file_verified(
@@ -253,83 +241,60 @@ def update_github(
             user["token"]
         ),
         content,
-        "Update subscription "
+        "Update permanent subscription "
         + str(user["telegram_id"])
-        + " expire="
-        + str(expire_timestamp)
     )
 
-    check = get_github_expire(
-        user["token"]
-    )
-
-    if check != expire_timestamp:
-        raise RuntimeError(
-            "GitHub expire не совпадает.\n"
-            "Ожидалось: "
-            + str(expire_timestamp)
-            + "\n"
-            "Получено: "
-            + str(check)
-        )
+    return True
 
 
-def disable_github(
+# ============================================================
+# TEXT
+# ============================================================
+
+def main_text(
     user
 ):
-    # ВАЖНО:
-    # Файл НЕ удаляем.
-    # Серверы НЕ удаляем.
-    # Только делаем подписку истёкшей.
+    if user["blocked"]:
+        status = "🔴 Заблокирована"
+    else:
+        status = "🟢 Подписка: Free"
 
-    update_github(
-        user,
-        1
+    return (
+        "🍑 ПЕРСИК VPN\n\n"
+        + status
+        + "\n"
+        + "📅 Срок: ♾️ Безлимит\n"
+        + "📦 Трафик: 10 ГБ\n\n"
+        + "🔄 Серверы обновляются автоматически\n\n"
+        + "👇 Выбери действие:"
     )
 
 
-# ============================================================
-# DATABASE EXPIRE
-# ============================================================
-
-def set_expire(
-    telegram_id,
-    expire_timestamp
+def subscription_text(
+    user,
+    ok=True
 ):
-    dt = datetime.fromtimestamp(
-        int(expire_timestamp),
-        timezone.utc
-    )
+    url = user["subscription_url"]
 
-    active = int(
-        int(expire_timestamp)
-        > now_unix()
-    )
-
-    conn = connect()
-
-    try:
-        conn.execute(
-            """
-            UPDATE users
-            SET expires_at = ?,
-                active = ?
-            WHERE telegram_id = ?
-            """,
-            (
-                dt.isoformat(),
-                active,
-                telegram_id
-            )
+    if not url:
+        url = raw_subscription_url(
+            user["token"]
         )
 
-        conn.commit()
+    if ok:
+        status = "🟢 Подписка OK"
+    else:
+        status = "🔴 Ошибка проверки"
 
-    finally:
-        conn.close()
-
-    return get_user(
-        telegram_id
+    return (
+        "📦 МОЯ ПОДПИСКА\n\n"
+        + status
+        + "\n\n"
+        + "📦 Трафик: 10 ГБ\n"
+        + "📅 Срок: ♾️ Безлимит\n\n"
+        + "🔗 Постоянная ссылка:\n"
+        + url
     )
 
 
@@ -349,19 +314,15 @@ def main_keyboard(
         ],
         [
             InlineKeyboardButton(
-                text="🎟 Промокод",
-                callback_data="promo"
-            )
-        ],
-        [
-            InlineKeyboardButton(
                 text="❓ Помощь",
                 callback_data="help"
             )
         ]
     ]
 
-    if is_admin(user_id):
+    if is_admin(
+        user_id
+    ):
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -381,14 +342,8 @@ def subscription_keyboard():
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🔄 Обновить подписку",
+                    text="🔄 Проверить подписку",
                     callback_data="refresh_subscription"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить подписку",
-                    callback_data="delete_subscription"
                 )
             ],
             [
@@ -412,24 +367,6 @@ def admin_keyboard():
             ],
             [
                 InlineKeyboardButton(
-                    text="➕ Выдать дни",
-                    callback_data="admin_add_days"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🎟 Создать промокод",
-                    callback_data="admin_create_promo"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📋 Промокоды",
-                    callback_data="admin_promos"
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     text="🚫 Заблокировать",
                     callback_data="admin_block"
                 )
@@ -438,12 +375,6 @@ def admin_keyboard():
                 InlineKeyboardButton(
                     text="🟢 Разблокировать",
                     callback_data="admin_unblock"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить подписку",
-                    callback_data="admin_delete"
                 )
             ],
             [
@@ -470,78 +401,6 @@ def back_keyboard():
 
 
 # ============================================================
-# TEXT
-# ============================================================
-
-def main_text(user):
-    if not user:
-        return (
-            "🍑 ПЕРСИК VPN\n\n"
-            "❌ Подписка не найдена."
-        )
-
-    expire = datetime_to_unix(
-        user["expires_at"]
-    )
-
-    if user["blocked"]:
-        status = "🔴 Подписка заблокирована"
-    elif expire <= now_unix():
-        status = "🔴 Подписка истекла"
-    else:
-        status = "🟢 Подписка: Free"
-
-    return (
-        "🍑 ПЕРСИК VPN\n\n"
-        + status
-        + "\n"
-        + "📅 До: "
-        + format_date(expire)
-        + "\n"
-        + "📦 Трафик: Безлимит\n\n"
-        + "🔄 Серверы обновляются автоматически\n\n"
-        + "👇 Выбери действие:"
-    )
-
-
-def subscription_text(user):
-    expire = datetime_to_unix(
-        user["expires_at"]
-    )
-
-    if user["blocked"]:
-        status = "🔴 Заблокирована"
-    elif expire <= now_unix():
-        status = "🔴 Истекла"
-    else:
-        status = "🟢 Активна"
-
-    url = user["subscription_url"]
-
-    if not url:
-        url = raw_subscription_url(
-            user["token"]
-        )
-
-    return (
-        "📦 МОЯ ПОДПИСКА\n\n"
-        + status
-        + "\n\n"
-        + "📅 До: "
-        + format_date(expire)
-        + "\n"
-        + "⏳ Осталось: "
-        + str(
-            days_left(expire)
-        )
-        + " дн.\n"
-        + "📦 Трафик: Безлимит\n\n"
-        + "🔗 Ссылка для Happ:\n"
-        + url
-    )
-
-
-# ============================================================
 # START
 # ============================================================
 
@@ -560,7 +419,7 @@ async def start(
 
     if not user:
         await message.answer(
-            "❌ Ошибка создания пользователя."
+            "❌ Не удалось создать пользователя."
         )
         return
 
@@ -570,34 +429,44 @@ async def start(
         )
         return
 
-    # При /start НЕ меняем expire.
-    # Просто создаём TOKEN.txt,
-    # если его ещё нет.
-
-    github_expire = get_github_expire(
-        user["token"]
-    )
-
-    if github_expire is None:
-        expire = datetime_to_unix(
-            user["expires_at"]
+    try:
+        url = raw_subscription_url(
+            user["token"]
         )
 
-        update_github(
-            user,
-            expire
+        # Один пользователь = один URL.
+        if not user["subscription_url"]:
+            save_subscription_url(
+                user_id,
+                url
+            )
+
+            user = get_user(
+                user_id
+            )
+
+        # Создаём TOKEN.txt только если
+        # его ещё нет.
+        create_or_check_subscription(
+            user
         )
 
-    user = refresh_user(
-        user_id
-    )
-
-    await message.answer(
-        main_text(user),
-        reply_markup=main_keyboard(
+        user = refresh_user(
             user_id
         )
-    )
+
+        await message.answer(
+            main_text(user),
+            reply_markup=main_keyboard(
+                user_id
+            )
+        )
+
+    except Exception as error:
+        await message.answer(
+            "❌ Ошибка создания подписки:\n\n"
+            + str(error)
+        )
 
 
 # ============================================================
@@ -627,6 +496,7 @@ async def back(
                 callback.from_user.id
             )
         )
+
     except Exception as error:
         if "message is not modified" not in str(error).lower():
             raise
@@ -654,24 +524,62 @@ async def subscription(
             callback.from_user.username or ""
         )
 
-    user = refresh_user(
-        callback.from_user.id
-    )
+    if user["blocked"]:
+        await callback.answer(
+            "🚫 Подписка заблокирована.",
+            show_alert=True
+        )
+        return
 
     try:
+        ok = check_subscription(
+            user
+        )
+
+        if not user["subscription_url"]:
+            save_subscription_url(
+                callback.from_user.id,
+                raw_subscription_url(
+                    user["token"]
+                )
+            )
+
+            user = get_user(
+                callback.from_user.id
+            )
+
         await callback.message.edit_text(
-            subscription_text(user),
+            subscription_text(
+                user,
+                ok
+            ),
             reply_markup=subscription_keyboard()
         )
-    except Exception as error:
-        if "message is not modified" not in str(error).lower():
-            raise
 
-    await callback.answer()
+        if ok:
+            await callback.answer(
+                "✅ Проверка OK"
+            )
+        else:
+            await callback.answer(
+                "❌ TOKEN.txt не найден или повреждён.",
+                show_alert=True
+            )
+
+    except Exception as error:
+        await callback.answer(
+            "❌ Ошибка проверки.",
+            show_alert=True
+        )
+
+        await callback.message.answer(
+            "❌ Ошибка:\n\n"
+            + str(error)
+        )
 
 
 # ============================================================
-# REFRESH SUBSCRIPTION
+# REFRESH / CHECK
 # ============================================================
 
 @dp.callback_query(
@@ -686,105 +594,64 @@ async def refresh_subscription(
 
     if not user:
         await callback.answer(
-            "❌ Подписка не найдена.",
+            "❌ Пользователь не найден.",
+            show_alert=True
+        )
+        return
+
+    if user["blocked"]:
+        await callback.answer(
+            "🚫 Подписка заблокирована.",
             show_alert=True
         )
         return
 
     try:
-        expire = datetime_to_unix(
-            user["expires_at"]
-        )
-
-        update_github(
-            user,
-            expire
-        )
-
-        user = refresh_user(
-            callback.from_user.id
-        )
-
-        try:
-            await callback.message.edit_text(
-                subscription_text(user),
-                reply_markup=subscription_keyboard()
-            )
-        except Exception as error:
-            if "message is not modified" not in str(error).lower():
-                raise
-
-        await callback.answer(
-            "✅ Подписка обновлена."
-        )
-
-    except Exception as error:
-        await callback.answer(
-            "❌ Ошибка обновления.",
-            show_alert=True
-        )
-
-        await callback.message.answer(
-            "❌ Ошибка обновления:\n\n"
-            + str(error)
-        )
-
-
-# ============================================================
-# USER DELETE
-# ============================================================
-
-@dp.callback_query(
-    F.data == "delete_subscription"
-)
-async def delete_subscription(
-    callback: CallbackQuery
-):
-    user = get_user(
-        callback.from_user.id
-    )
-
-    if not user:
-        await callback.answer(
-            "Подписка уже отключена.",
-            show_alert=True
-        )
-        return
-
-    try:
-        # Не удаляем TOKEN.txt.
-        # Не удаляем БД.
-        # Не удаляем серверы.
-
-        disable_github(
+        ok = check_subscription(
             user
         )
 
-        user = set_expire(
-            callback.from_user.id,
-            1
+        if not ok:
+            # Если TOKEN.txt пропал,
+            # восстанавливаем его с тем же TOKEN.
+            update_subscription(
+                user
+            )
+
+            ok = check_subscription(
+                user
+            )
+
+        user = get_user(
+            callback.from_user.id
         )
 
         await callback.message.edit_text(
-            "🗑 Подписка отключена.\n\n"
-            "📦 Серверы сохранены.\n"
-            "🔗 Ссылка Happ сохранена.\n"
-            "🔴 Подписка истекла.\n\n"
-            "Администратор может снова выдать дни."
+            subscription_text(
+                user,
+                ok
+            ),
+            reply_markup=subscription_keyboard()
         )
 
-        await callback.answer(
-            "✅ Подписка отключена."
-        )
+        if ok:
+            await callback.answer(
+                "✅ Всё OK"
+            )
+        else:
+            await callback.answer(
+                "❌ Проверка не пройдена.",
+                show_alert=True
+            )
 
     except Exception as error:
         await callback.answer(
-            "❌ Ошибка.",
+            "❌ Ошибка проверки.",
             show_alert=True
         )
 
         await callback.message.answer(
-            "❌ Ошибка отключения:\n\n"
+            "❌ Ошибка:\n\n"
             + str(error)
         )
 
@@ -801,14 +668,14 @@ async def help_callback(
 ):
     await callback.message.edit_text(
         "❓ ПОМОЩЬ\n\n"
-        "🍑 Персик VPN работает через персональную "
-        "ссылку подписки.\n\n"
-        "1. Открой «Моя подписка».\n"
-        "2. Скопируй ссылку.\n"
-        "3. Добавь её в Happ.\n"
-        "4. После изменения подписки нажми "
-        "«Обновить подписку».\n\n"
-        "🔄 Серверы обновляются автоматически.",
+        "🍑 Персик VPN\n\n"
+        "📦 Трафик: 10 ГБ\n"
+        "📅 Срок: ♾️ Безлимит\n"
+        "🔗 Ссылка постоянная.\n\n"
+        "Добавь ссылку из «Моя подписка» "
+        "в Happ.\n\n"
+        "Если подписка не обновилась, "
+        "нажми «🔄 Проверить подписку».",
         reply_markup=back_keyboard()
     )
 
@@ -816,128 +683,7 @@ async def help_callback(
 
 
 # ============================================================
-# PROMO
-# ============================================================
-
-@dp.callback_query(
-    F.data == "promo"
-)
-async def promo_menu(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-    await state.set_state(
-        UserStates.promo
-    )
-
-    await callback.message.edit_text(
-        "🎟 ПРОМОКОД\n\n"
-        "Отправь промокод одним сообщением.",
-        reply_markup=back_keyboard()
-    )
-
-    await callback.answer()
-
-
-@dp.message(
-    UserStates.promo
-)
-async def promo_user(
-    message: Message,
-    state: FSMContext
-):
-    user_id = message.from_user.id
-
-    user = get_user(
-        user_id
-    )
-
-    if not user:
-        user = create_user(
-            user_id,
-            username_of(message)
-        )
-
-    if user["blocked"]:
-        await message.answer(
-            "🚫 Твоя подписка заблокирована."
-        )
-        await state.clear()
-        return
-
-    code = (
-        message.text or ""
-    ).strip()
-
-    try:
-        success, value = use_promo(
-            code,
-            user_id
-        )
-
-        if not success:
-            await message.answer(
-                "❌ " + str(value),
-                reply_markup=back_keyboard()
-            )
-
-            await state.clear()
-            return
-
-        promo_days = int(
-            value
-        )
-
-        # СТАРАЯ РАБОЧАЯ СХЕМА:
-        # дни считаются в SQLite.
-        user = add_days(
-            user_id,
-            promo_days
-        )
-
-        if not user:
-            raise RuntimeError(
-                "Пользователь не найден."
-            )
-
-        expire = datetime_to_unix(
-            user["expires_at"]
-        )
-
-        # Потом только GitHub.
-        update_github(
-            user,
-            expire
-        )
-
-        await message.answer(
-            "✅ ПРОМОКОД АКТИВИРОВАН\n\n"
-            "🎟 Код: "
-            + code.upper()
-            + "\n"
-            "➕ Добавлено: "
-            + str(promo_days)
-            + " дн.\n\n"
-            "📅 До: "
-            + format_date(expire)
-            + "\n"
-            "☁️ TOKEN.txt обновлён.",
-            reply_markup=main_keyboard(
-                user_id
-            )
-        )
-
-    except Exception as error:
-        await message.answer(
-            "❌ Ошибка применения промокода:\n\n"
-            + str(error)
-        )
-
-    await state.clear()
-
-
-# ============================================================
-# ADMIN
+# ADMIN PANEL
 # ============================================================
 
 @dp.callback_query(
@@ -998,16 +744,10 @@ async def admin_users(
         ]
 
         for user in users:
-            expire = datetime_to_unix(
-                user["expires_at"]
-            )
-
             if user["blocked"]:
                 status = "🚫"
-            elif expire > now_unix():
-                status = "🟢"
             else:
-                status = "🔴"
+                status = "🟢"
 
             username = (
                 "@"
@@ -1025,350 +765,8 @@ async def admin_users(
             )
 
             lines.append(
-                "📅 "
-                + format_date(expire)
-            )
-
-            lines.append("")
-
-        text = "\n".join(
-            lines
-        )
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=back_keyboard()
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-# ADMIN ADD DAYS
-# ============================================================
-
-@dp.callback_query(
-    F.data == "admin_add_days"
-)
-async def admin_add_days_start(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-    if not is_admin(
-        callback.from_user.id
-    ):
-        await callback.answer(
-            "⛔ Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    await state.set_state(
-        AdminStates.add_days
-    )
-
-    await callback.message.edit_text(
-        "➕ ВЫДАТЬ ДНИ\n\n"
-        "Отправь:\n\n"
-        "ID ДНИ\n\n"
-        "Пример:\n"
-        "123456789 30",
-        reply_markup=back_keyboard()
-    )
-
-    await callback.answer()
-
-
-@dp.message(
-    AdminStates.add_days
-)
-async def admin_add_days_message(
-    message: Message,
-    state: FSMContext
-):
-    if not is_admin(
-        message.from_user.id
-    ):
-        await state.clear()
-        return
-
-    parts = (
-        message.text or ""
-    ).split()
-
-    if len(parts) != 2:
-        await message.answer(
-            "❌ Формат:\n\n"
-            "ID ДНИ\n\n"
-            "Пример:\n"
-            "123456789 30"
-        )
-        return
-
-    try:
-        target_id = int(
-            parts[0]
-        )
-
-        days = int(
-            parts[1]
-        )
-
-    except ValueError:
-        await message.answer(
-            "❌ ID и дни должны быть числами."
-        )
-        return
-
-    if days <= 0:
-        await message.answer(
-            "❌ Дни должны быть больше нуля."
-        )
-        return
-
-    user = get_user(
-        target_id
-    )
-
-    if not user:
-        await message.answer(
-            "❌ Пользователь не найден."
-        )
-
-        await state.clear()
-        return
-
-    try:
-        # ====================================================
-        # СТАРАЯ РАБОЧАЯ ЛОГИКА TERMUX
-        # ====================================================
-
-        old_expire = datetime_to_unix(
-            user["expires_at"]
-        )
-
-        user = add_days(
-            target_id,
-            days
-        )
-
-        if not user:
-            raise RuntimeError(
-                "Пользователь не найден после add_days()."
-            )
-
-        new_expire = datetime_to_unix(
-            user["expires_at"]
-        )
-
-        if new_expire <= old_expire:
-            raise RuntimeError(
-                "Дата не увеличилась.\n"
-                "Было: "
-                + str(old_expire)
-                + "\n"
-                "Стало: "
-                + str(new_expire)
-            )
-
-        # Теперь записываем результат в GitHub.
-        update_github(
-            user,
-            new_expire
-        )
-
-        await message.answer(
-            "✅ ДНИ ВЫДАНЫ\n\n"
-            "👤 ID: "
-            + str(target_id)
-            + "\n"
-            "➕ Добавлено: "
-            + str(days)
-            + " дн.\n\n"
-            "Было:\n"
-            + format_date(old_expire)
-            + "\n\n"
-            "Стало:\n"
-            + format_date(new_expire)
-            + "\n\n"
-            "expire:\n"
-            + str(new_expire)
-            + "\n\n"
-            "☁️ TOKEN.txt обновлён."
-        )
-
-    except Exception as error:
-        await message.answer(
-            "❌ Ошибка выдачи дней:\n\n"
-            + str(error)
-        )
-
-    await state.clear()
-
-
-# ============================================================
-# ADMIN CREATE PROMO
-# ============================================================
-
-@dp.callback_query(
-    F.data == "admin_create_promo"
-)
-async def admin_create_promo_start(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-    if not is_admin(
-        callback.from_user.id
-    ):
-        await callback.answer(
-            "⛔ Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    await state.set_state(
-        AdminStates.create_promo
-    )
-
-    await callback.message.edit_text(
-        "🎟 СОЗДАНИЕ ПРОМОКОДА\n\n"
-        "Формат:\n\n"
-        "КОД ДНИ КОЛИЧЕСТВО\n\n"
-        "Пример:\n"
-        "666M 30 10",
-        reply_markup=back_keyboard()
-    )
-
-    await callback.answer()
-
-
-@dp.message(
-    AdminStates.create_promo
-)
-async def admin_create_promo_message(
-    message: Message,
-    state: FSMContext
-):
-    if not is_admin(
-        message.from_user.id
-    ):
-        await state.clear()
-        return
-
-    parts = (
-        message.text or ""
-    ).split()
-
-    if len(parts) != 3:
-        await message.answer(
-            "❌ Формат:\n\n"
-            "КОД ДНИ КОЛИЧЕСТВО\n\n"
-            "Пример:\n"
-            "666M 30 10"
-        )
-        return
-
-    code = parts[0]
-
-    try:
-        days = int(
-            parts[1]
-        )
-
-        max_uses = int(
-            parts[2]
-        )
-
-    except ValueError:
-        await message.answer(
-            "❌ Дни и количество должны быть числами."
-        )
-        return
-
-    if days <= 0 or max_uses <= 0:
-        await message.answer(
-            "❌ Значения должны быть больше нуля."
-        )
-        return
-
-    try:
-        create_promo(
-            code,
-            days,
-            max_uses
-        )
-
-        await message.answer(
-            "✅ ПРОМОКОД СОЗДАН\n\n"
-            "🎟 Код: "
-            + code.upper()
-            + "\n"
-            "📅 Дней: "
-            + str(days)
-            + "\n"
-            "👥 Использований: "
-            + str(max_uses)
-        )
-
-    except Exception as error:
-        await message.answer(
-            "❌ Ошибка создания промокода:\n\n"
-            + str(error)
-        )
-
-    await state.clear()
-
-
-# ============================================================
-# ADMIN PROMOS
-# ============================================================
-
-@dp.callback_query(
-    F.data == "admin_promos"
-)
-async def admin_promos(
-    callback: CallbackQuery
-):
-    if not is_admin(
-        callback.from_user.id
-    ):
-        await callback.answer(
-            "⛔ Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    promos = list_promos()
-
-    if not promos:
-        text = (
-            "📋 ПРОМОКОДЫ\n\n"
-            "Промокодов пока нет."
-        )
-
-    else:
-        lines = [
-            "📋 ПРОМОКОДЫ",
-            ""
-        ]
-
-        for promo in promos:
-            lines.append(
-                "🎟 "
-                + promo["code"]
-            )
-
-            lines.append(
-                "📅 "
-                + str(promo["days"])
-                + " дн."
-            )
-
-            lines.append(
-                "👥 "
-                + str(promo["uses"])
-                + "/"
-                + str(promo["max_uses"])
+                "🔗 TOKEN: "
+                + user["token"]
             )
 
             lines.append("")
@@ -1435,6 +833,7 @@ async def admin_block_message(
         target_id = int(
             message.text.strip()
         )
+
     except ValueError:
         await message.answer(
             "❌ ID должен быть числом."
@@ -1452,30 +851,17 @@ async def admin_block_message(
         await state.clear()
         return
 
-    try:
-        user = set_blocked(
-            target_id,
-            True
-        )
+    set_blocked(
+        target_id,
+        True
+    )
 
-        disable_github(
-            user
-        )
-
-        await message.answer(
-            "🚫 Пользователь заблокирован.\n\n"
-            "👤 ID: "
-            + str(target_id)
-            + "\n"
-            "📦 Серверы сохранены.\n"
-            "🔴 expire=1."
-        )
-
-    except Exception as error:
-        await message.answer(
-            "❌ Ошибка блокировки:\n\n"
-            + str(error)
-        )
+    await message.answer(
+        "🚫 Пользователь заблокирован.\n\n"
+        "🔗 TOKEN сохранён.\n"
+        "📦 Серверы сохранены.\n"
+        "🗑 Ничего не удалялось."
+    )
 
     await state.clear()
 
@@ -1530,6 +916,7 @@ async def admin_unblock_message(
         target_id = int(
             message.text.strip()
         )
+
     except ValueError:
         await message.answer(
             "❌ ID должен быть числом."
@@ -1547,142 +934,34 @@ async def admin_unblock_message(
         await state.clear()
         return
 
-    try:
-        user = set_blocked(
-            target_id,
-            False
-        )
-
-        expire = datetime_to_unix(
-            user["expires_at"]
-        )
-
-        if expire <= now_unix():
-            await message.answer(
-                "🟢 Пользователь разблокирован.\n\n"
-                "Но подписка истекла.\n"
-                "Выдай ему дни через «➕ Выдать дни»."
-            )
-
-        else:
-            update_github(
-                user,
-                expire
-            )
-
-            await message.answer(
-                "🟢 Пользователь разблокирован.\n\n"
-                "📅 До: "
-                + format_date(expire)
-            )
-
-    except Exception as error:
-        await message.answer(
-            "❌ Ошибка разблокировки:\n\n"
-            + str(error)
-        )
-
-    await state.clear()
-
-
-# ============================================================
-# ADMIN DELETE
-# ============================================================
-
-@dp.callback_query(
-    F.data == "admin_delete"
-)
-async def admin_delete_start(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-    if not is_admin(
-        callback.from_user.id
-    ):
-        await callback.answer(
-            "⛔ Нет доступа.",
-            show_alert=True
-        )
-        return
-
-    await state.set_state(
-        AdminStates.delete_user
+    set_blocked(
+        target_id,
+        False
     )
-
-    await callback.message.edit_text(
-        "🗑 УДАЛЕНИЕ ПОДПИСКИ\n\n"
-        "Отправь Telegram ID.\n\n"
-        "Серверы и TOKEN.txt сохранятся.",
-        reply_markup=back_keyboard()
-    )
-
-    await callback.answer()
-
-
-@dp.message(
-    AdminStates.delete_user
-)
-async def admin_delete_message(
-    message: Message,
-    state: FSMContext
-):
-    if not is_admin(
-        message.from_user.id
-    ):
-        await state.clear()
-        return
-
-    try:
-        target_id = int(
-            message.text.strip()
-        )
-    except ValueError:
-        await message.answer(
-            "❌ ID должен быть числом."
-        )
-        return
 
     user = get_user(
         target_id
     )
 
-    if not user:
-        await message.answer(
-            "❌ Пользователь не найден."
-        )
-        await state.clear()
-        return
-
     try:
-        # НЕ удаляем пользователя.
-        # НЕ удаляем TOKEN.txt.
-        # НЕ удаляем серверы.
-        #
-        # Только истекает подписка.
-
-        disable_github(
+        if not check_subscription(
             user
-        )
-
-        set_expire(
-            target_id,
-            1
-        )
+        ):
+            update_subscription(
+                user
+            )
 
         await message.answer(
-            "🗑 ПОДПИСКА ОТКЛЮЧЕНА\n\n"
-            "👤 ID: "
-            + str(target_id)
-            + "\n\n"
-            "📦 Серверы сохранены.\n"
-            "🔗 TOKEN.txt сохранён.\n"
-            "🔴 expire=1.\n\n"
-            "Теперь можно снова выдать дни."
+            "🟢 Пользователь разблокирован.\n\n"
+            "🔗 Постоянная ссылка сохранена.\n"
+            "📦 10 ГБ.\n"
+            "📅 Безлимитный срок."
         )
 
     except Exception as error:
         await message.answer(
-            "❌ Ошибка отключения:\n\n"
+            "🟢 Пользователь разблокирован,\n"
+            "но возникла ошибка проверки:\n\n"
             + str(error)
         )
 
@@ -1690,22 +969,7 @@ async def admin_delete_message(
 
 
 # ============================================================
-# COMMAND HELP
-# ============================================================
-
-@dp.message(
-    Command("help")
-)
-async def command_help(
-    message: Message
-):
-    await message.answer(
-        "❓ Используй кнопку «❓ Помощь»."
-    )
-
-
-# ============================================================
-# ERROR
+# ERROR HANDLER
 # ============================================================
 
 @dp.errors()
@@ -1745,15 +1009,19 @@ async def main():
     init_db()
 
     print(
-        "🍑 Персик VPN Bot 3.0 запущен."
+        "🍑 Персик VPN Bot запущен."
     )
 
     print(
-        "add_days() = SQLite"
+        "Схема: 1 пользователь = 1 TOKEN = 1 постоянная ссылка"
     )
 
     print(
-        "GitHub = запись результата"
+        "Трафик: 10 ГБ"
+    )
+
+    print(
+        "Срок: безлимит"
     )
 
     await dp.start_polling(
@@ -1766,6 +1034,7 @@ if __name__ == "__main__":
         asyncio.run(
             main()
         )
+
     except KeyboardInterrupt:
         print(
             "Бот остановлен."
