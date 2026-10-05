@@ -14,7 +14,7 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import BOT_TOKEN, ADMIN_ID, HAPP_PAGE
+from config import BOT_TOKEN, ADMIN_ID
 
 from database import (
     init_db,
@@ -24,17 +24,17 @@ from database import (
     list_users,
     add_days,
     set_blocked,
-    delete_user,
     create_promo,
     list_promos,
-    use_promo
+    use_promo,
+    connect
 )
 
 from github_api import (
     get_file_content,
     put_file_verified,
-    raw_subscription_url,
-    subscription_path
+    subscription_path,
+    raw_subscription_url
 )
 
 
@@ -45,7 +45,10 @@ NODES_FILE = "nodes.txt"
 # BOT
 # ============================================================
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN
+)
+
 dp = Dispatcher()
 
 
@@ -66,7 +69,7 @@ class UserStates(StatesGroup):
 
 
 # ============================================================
-# BASIC HELPERS
+# HELPERS
 # ============================================================
 
 def is_admin(user_id):
@@ -114,28 +117,22 @@ def format_date(timestamp):
         return "Н/Д"
 
 
-def days_left_from_expire(
-    expire_timestamp
-):
-    try:
-        seconds = (
-            int(expire_timestamp)
-            - now_unix()
-        )
+def days_left(timestamp):
+    seconds = (
+        int(timestamp)
+        - now_unix()
+    )
 
-        if seconds <= 0:
-            return 0
-
-        return int(
-            (seconds + 86399)
-            // 86400
-        )
-
-    except Exception:
+    if seconds <= 0:
         return 0
 
+    return int(
+        (seconds + 86399)
+        // 86400
+    )
 
-def safe_username(message):
+
+def username_of(message):
     if not message.from_user:
         return ""
 
@@ -146,7 +143,7 @@ def safe_username(message):
 
 
 # ============================================================
-# NODES
+# GITHUB
 # ============================================================
 
 def read_nodes():
@@ -162,7 +159,6 @@ def read_nodes():
             encoding="utf-8"
         ) as file:
             lines = file.read().splitlines()
-
     except Exception:
         return []
 
@@ -182,19 +178,45 @@ def read_nodes():
     return nodes
 
 
-# ============================================================
-# GITHUB EXPIRE
-# ============================================================
+def build_subscription(
+    user,
+    expire_timestamp
+):
+    token = user["token"]
+
+    lines = [
+        'id="' + token[:6] + '"',
+        "#profile-title: 🍑 Персик VPN",
+        "#announce: 🆓 Бесплатный VPN | "
+        "🇳🇱 Нидерланды • "
+        "🇩🇪 Германия • "
+        "🇰🇿 Казахстан",
+        "#subscription-userinfo: "
+        "upload=0; "
+        "download=0; "
+        "total=0; "
+        "expire="
+        + str(int(expire_timestamp)),
+        "#profile-update-interval: 1",
+        ""
+    ]
+
+    lines.extend(
+        read_nodes()
+    )
+
+    lines.append("")
+
+    return "\n".join(
+        lines
+    )
+
 
 def get_github_expire(
     token
 ):
-    path = subscription_path(
-        token
-    )
-
     content = get_file_content(
-        path
+        subscription_path(token)
     )
 
     if not content:
@@ -213,16 +235,67 @@ def get_github_expire(
     )
 
 
+def update_github(
+    user,
+    expire_timestamp
+):
+    expire_timestamp = int(
+        expire_timestamp
+    )
+
+    content = build_subscription(
+        user,
+        expire_timestamp
+    )
+
+    put_file_verified(
+        subscription_path(
+            user["token"]
+        ),
+        content,
+        "Update subscription "
+        + str(user["telegram_id"])
+        + " expire="
+        + str(expire_timestamp)
+    )
+
+    check = get_github_expire(
+        user["token"]
+    )
+
+    if check != expire_timestamp:
+        raise RuntimeError(
+            "GitHub expire не совпадает.\n"
+            "Ожидалось: "
+            + str(expire_timestamp)
+            + "\n"
+            "Получено: "
+            + str(check)
+        )
+
+
+def disable_github(
+    user
+):
+    # ВАЖНО:
+    # Файл НЕ удаляем.
+    # Серверы НЕ удаляем.
+    # Только делаем подписку истёкшей.
+
+    update_github(
+        user,
+        1
+    )
+
+
 # ============================================================
-# DATABASE EXPIRE SYNC
+# DATABASE EXPIRE
 # ============================================================
 
-def set_database_expire(
+def set_expire(
     telegram_id,
     expire_timestamp
 ):
-    from database import connect
-
     dt = datetime.fromtimestamp(
         int(expire_timestamp),
         timezone.utc
@@ -261,210 +334,13 @@ def set_database_expire(
 
 
 # ============================================================
-# BUILD TOKEN.TXT
-# ============================================================
-
-def build_subscription(
-    user,
-    expire_timestamp
-):
-    token = user["token"]
-
-    lines = []
-
-    lines.append(
-        'id="' + token[:6] + '"'
-    )
-
-    lines.append(
-        "#profile-title: 🍑 Персик VPN"
-    )
-
-    lines.append(
-        "#announce: 🆓 Бесплатный VPN | "
-        "🇳🇱 Нидерланды • "
-        "🇩🇪 Германия • "
-        "🇰🇿 Казахстан"
-    )
-
-    lines.append(
-        "#subscription-userinfo: "
-        "upload=0; "
-        "download=0; "
-        "total=0; "
-        "expire="
-        + str(int(expire_timestamp))
-    )
-
-    lines.append(
-        "#profile-update-interval: 1"
-    )
-
-    lines.append("")
-
-    nodes = read_nodes()
-
-    for node in nodes:
-        lines.append(node)
-
-    lines.append("")
-
-    return "\n".join(
-        lines
-    )
-
-
-# ============================================================
-# UPDATE GITHUB SUBSCRIPTION
-# ============================================================
-
-def update_github_subscription(
-    user,
-    expire_timestamp
-):
-    expire_timestamp = int(
-        expire_timestamp
-    )
-
-    content = build_subscription(
-        user,
-        expire_timestamp
-    )
-
-    path = subscription_path(
-        user["token"]
-    )
-
-    put_file_verified(
-        path,
-        content,
-        "Update subscription "
-        + str(user["telegram_id"])
-        + " expire="
-        + str(expire_timestamp)
-    )
-
-    # Проверяем именно GitHub API.
-    github_expire = get_github_expire(
-        user["token"]
-    )
-
-    if github_expire != expire_timestamp:
-        raise RuntimeError(
-            "GitHub expire не совпадает.\n"
-            "Ожидалось: "
-            + str(expire_timestamp)
-            + "\n"
-            "Получено: "
-            + str(github_expire)
-        )
-
-    return True
-
-
-# ============================================================
-# EXPIRE SYNC
-# ============================================================
-
-def sync_user_from_github(
-    user
-):
-    github_expire = get_github_expire(
-        user["token"]
-    )
-
-    if github_expire is None:
-        return user, None
-
-    db_expire = datetime_to_unix(
-        user["expires_at"]
-    )
-
-    if github_expire != db_expire:
-        user = set_database_expire(
-            user["telegram_id"],
-            github_expire
-        )
-
-    return user, github_expire
-
-
-# ============================================================
-# CREATE/RESTORE SUBSCRIPTION
-# ============================================================
-
-def ensure_subscription(
-    user
-):
-    github_expire = get_github_expire(
-        user["token"]
-    )
-
-    if github_expire is None:
-        expire = datetime_to_unix(
-            user["expires_at"]
-        )
-
-        update_github_subscription(
-            user,
-            expire
-        )
-
-        return user, expire
-
-    return sync_user_from_github(
-        user
-    )
-
-
-# ============================================================
-# DISABLE SUBSCRIPTION
-# ============================================================
-
-def disable_github_subscription(
-    user
-):
-    # ВАЖНО:
-    # TOKEN.txt НЕ удаляем.
-    # Сохраняем все серверы.
-    # Просто ставим expire=1.
-
-    content = build_subscription(
-        user,
-        1
-    )
-
-    path = subscription_path(
-        user["token"]
-    )
-
-    put_file_verified(
-        path,
-        content,
-        "Disable subscription "
-        + str(user["telegram_id"])
-    )
-
-    github_expire = get_github_expire(
-        user["token"]
-    )
-
-    if github_expire != 1:
-        raise RuntimeError(
-            "GitHub не установил expire=1."
-        )
-
-    return True
-
-
-# ============================================================
-# UI
+# KEYBOARDS
 # ============================================================
 
 def main_keyboard(
     user_id
 ):
-    rows = [
+    buttons = [
         [
             InlineKeyboardButton(
                 text="📦 Моя подписка",
@@ -486,7 +362,7 @@ def main_keyboard(
     ]
 
     if is_admin(user_id):
-        rows.append(
+        buttons.append(
             [
                 InlineKeyboardButton(
                     text="🔐 Админ-панель",
@@ -496,7 +372,7 @@ def main_keyboard(
         )
 
     return InlineKeyboardMarkup(
-        inline_keyboard=rows
+        inline_keyboard=buttons
     )
 
 
@@ -610,10 +486,8 @@ def main_text(user):
 
     if user["blocked"]:
         status = "🔴 Подписка заблокирована"
-
     elif expire <= now_unix():
         status = "🔴 Подписка истекла"
-
     else:
         status = "🟢 Подписка: Free"
 
@@ -630,19 +504,15 @@ def main_text(user):
     )
 
 
-def subscription_text(
-    user
-):
+def subscription_text(user):
     expire = datetime_to_unix(
         user["expires_at"]
     )
 
     if user["blocked"]:
         status = "🔴 Заблокирована"
-
     elif expire <= now_unix():
         status = "🔴 Истекла"
-
     else:
         status = "🟢 Активна"
 
@@ -662,9 +532,7 @@ def subscription_text(
         + "\n"
         + "⏳ Осталось: "
         + str(
-            days_left_from_expire(
-                expire
-            )
+            days_left(expire)
         )
         + " дн.\n"
         + "📦 Трафик: Безлимит\n\n"
@@ -674,7 +542,7 @@ def subscription_text(
 
 
 # ============================================================
-# /START
+# START
 # ============================================================
 
 @dp.message(
@@ -687,12 +555,12 @@ async def start(
 
     user = create_user(
         user_id,
-        safe_username(message)
+        username_of(message)
     )
 
     if not user:
         await message.answer(
-            "❌ Не удалось создать пользователя."
+            "❌ Ошибка создания пользователя."
         )
         return
 
@@ -702,17 +570,22 @@ async def start(
         )
         return
 
-    try:
-        user, github_expire = (
-            ensure_subscription(
-                user
-            )
+    # При /start НЕ меняем expire.
+    # Просто создаём TOKEN.txt,
+    # если его ещё нет.
+
+    github_expire = get_github_expire(
+        user["token"]
+    )
+
+    if github_expire is None:
+        expire = datetime_to_unix(
+            user["expires_at"]
         )
 
-    except Exception as error:
-        print(
-            "GitHub sync error:",
-            error
+        update_github(
+            user,
+            expire
         )
 
     user = refresh_user(
@@ -754,7 +627,6 @@ async def back(
                 callback.from_user.id
             )
         )
-
     except Exception as error:
         if "message is not modified" not in str(error).lower():
             raise
@@ -782,19 +654,6 @@ async def subscription(
             callback.from_user.username or ""
         )
 
-    try:
-        user, github_expire = (
-            ensure_subscription(
-                user
-            )
-        )
-
-    except Exception as error:
-        print(
-            "Subscription sync error:",
-            error
-        )
-
     user = refresh_user(
         callback.from_user.id
     )
@@ -804,7 +663,6 @@ async def subscription(
             subscription_text(user),
             reply_markup=subscription_keyboard()
         )
-
     except Exception as error:
         if "message is not modified" not in str(error).lower():
             raise
@@ -813,7 +671,7 @@ async def subscription(
 
 
 # ============================================================
-# REFRESH
+# REFRESH SUBSCRIPTION
 # ============================================================
 
 @dp.callback_query(
@@ -834,20 +692,13 @@ async def refresh_subscription(
         return
 
     try:
-        user, github_expire = (
-            ensure_subscription(
-                user
-            )
+        expire = datetime_to_unix(
+            user["expires_at"]
         )
 
-        if github_expire is None:
-            github_expire = datetime_to_unix(
-                user["expires_at"]
-            )
-
-        update_github_subscription(
+        update_github(
             user,
-            github_expire
+            expire
         )
 
         user = refresh_user(
@@ -859,7 +710,6 @@ async def refresh_subscription(
                 subscription_text(user),
                 reply_markup=subscription_keyboard()
             )
-
         except Exception as error:
             if "message is not modified" not in str(error).lower():
                 raise
@@ -896,21 +746,21 @@ async def delete_subscription(
 
     if not user:
         await callback.answer(
-            "Подписка уже удалена.",
+            "Подписка уже отключена.",
             show_alert=True
         )
         return
 
     try:
-        # НЕ удаляем TOKEN.txt.
-        disable_github_subscription(
+        # Не удаляем TOKEN.txt.
+        # Не удаляем БД.
+        # Не удаляем серверы.
+
+        disable_github(
             user
         )
 
-        # БД тоже не удаляем.
-        # Оставляем пользователя и token,
-        # чтобы можно было восстановить подписку.
-        user = set_database_expire(
+        user = set_expire(
             callback.from_user.id,
             1
         )
@@ -919,9 +769,8 @@ async def delete_subscription(
             "🗑 Подписка отключена.\n\n"
             "📦 Серверы сохранены.\n"
             "🔗 Ссылка Happ сохранена.\n"
-            "🔴 Подписка отмечена как истёкшая.\n\n"
-            "Чтобы вернуть подписку, используй промокод "
-            "или попроси администратора выдать дни."
+            "🔴 Подписка истекла.\n\n"
+            "Администратор может снова выдать дни."
         )
 
         await callback.answer(
@@ -950,7 +799,7 @@ async def delete_subscription(
 async def help_callback(
     callback: CallbackQuery
 ):
-    text = (
+    await callback.message.edit_text(
         "❓ ПОМОЩЬ\n\n"
         "🍑 Персик VPN работает через персональную "
         "ссылку подписки.\n\n"
@@ -959,18 +808,9 @@ async def help_callback(
         "3. Добавь её в Happ.\n"
         "4. После изменения подписки нажми "
         "«Обновить подписку».\n\n"
-        "🔄 Серверы обновляются автоматически."
+        "🔄 Серверы обновляются автоматически.",
+        reply_markup=back_keyboard()
     )
-
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=back_keyboard()
-        )
-
-    except Exception as error:
-        if "message is not modified" not in str(error).lower():
-            raise
 
     await callback.answer()
 
@@ -1015,14 +855,13 @@ async def promo_user(
     if not user:
         user = create_user(
             user_id,
-            safe_username(message)
+            username_of(message)
         )
 
     if user["blocked"]:
         await message.answer(
             "🚫 Твоя подписка заблокирована."
         )
-
         await state.clear()
         return
 
@@ -1049,41 +888,26 @@ async def promo_user(
             value
         )
 
-        # Берём expire из GitHub.
-        github_expire = get_github_expire(
-            user["token"]
+        # СТАРАЯ РАБОЧАЯ СХЕМА:
+        # дни считаются в SQLite.
+        user = add_days(
+            user_id,
+            promo_days
         )
 
-        current = now_unix()
-
-        if github_expire is None:
-            github_expire = max(
-                current,
-                datetime_to_unix(
-                    user["expires_at"]
-                )
+        if not user:
+            raise RuntimeError(
+                "Пользователь не найден."
             )
 
-        base_expire = max(
-            github_expire,
-            current
+        expire = datetime_to_unix(
+            user["expires_at"]
         )
 
-        new_expire = (
-            base_expire
-            + promo_days * 86400
-        )
-
-        # БД.
-        user = set_database_expire(
-            user_id,
-            new_expire
-        )
-
-        # GitHub.
-        update_github_subscription(
+        # Потом только GitHub.
+        update_github(
             user,
-            new_expire
+            expire
         )
 
         await message.answer(
@@ -1091,13 +915,13 @@ async def promo_user(
             "🎟 Код: "
             + code.upper()
             + "\n"
-            + "➕ Добавлено: "
+            "➕ Добавлено: "
             + str(promo_days)
             + " дн.\n\n"
-            + "📅 До: "
-            + format_date(new_expire)
+            "📅 До: "
+            + format_date(expire)
             + "\n"
-            + "☁️ TOKEN.txt обновлён.",
+            "☁️ TOKEN.txt обновлён.",
             reply_markup=main_keyboard(
                 user_id
             )
@@ -1113,7 +937,7 @@ async def promo_user(
 
 
 # ============================================================
-# ADMIN PANEL
+# ADMIN
 # ============================================================
 
 @dp.callback_query(
@@ -1168,7 +992,7 @@ async def admin_users(
         )
 
     else:
-        parts = [
+        lines = [
             "👥 ПОЛЬЗОВАТЕЛИ",
             ""
         ]
@@ -1178,6 +1002,13 @@ async def admin_users(
                 user["expires_at"]
             )
 
+            if user["blocked"]:
+                status = "🚫"
+            elif expire > now_unix():
+                status = "🟢"
+            else:
+                status = "🔴"
+
             username = (
                 "@"
                 + user["username"]
@@ -1185,16 +1016,7 @@ async def admin_users(
                 else "без username"
             )
 
-            if user["blocked"]:
-                status = "🚫"
-
-            elif expire > now_unix():
-                status = "🟢"
-
-            else:
-                status = "🔴"
-
-            parts.append(
+            lines.append(
                 status
                 + " "
                 + str(user["telegram_id"])
@@ -1202,15 +1024,15 @@ async def admin_users(
                 + username
             )
 
-            parts.append(
+            lines.append(
                 "📅 "
                 + format_date(expire)
             )
 
-            parts.append("")
+            lines.append("")
 
         text = "\n".join(
-            parts
+            lines
         )
 
     await callback.message.edit_text(
@@ -1318,56 +1140,42 @@ async def admin_add_days_message(
 
     try:
         # ====================================================
-        # GITHUB = SOURCE OF TRUTH
+        # СТАРАЯ РАБОЧАЯ ЛОГИКА TERMUX
         # ====================================================
 
-        github_expire = get_github_expire(
-            user["token"]
+        old_expire = datetime_to_unix(
+            user["expires_at"]
         )
 
-        current = now_unix()
+        user = add_days(
+            target_id,
+            days
+        )
 
-        if github_expire is None:
-            github_expire = datetime_to_unix(
-                user["expires_at"]
+        if not user:
+            raise RuntimeError(
+                "Пользователь не найден после add_days()."
             )
 
-        old_expire = max(
-            github_expire,
-            current
+        new_expire = datetime_to_unix(
+            user["expires_at"]
         )
 
-        new_expire = (
-            old_expire
-            + days * 86400
-        )
+        if new_expire <= old_expire:
+            raise RuntimeError(
+                "Дата не увеличилась.\n"
+                "Было: "
+                + str(old_expire)
+                + "\n"
+                "Стало: "
+                + str(new_expire)
+            )
 
-        # Синхронизируем SQLite.
-        user = set_database_expire(
-            target_id,
-            new_expire
-        )
-
-        # Записываем новый expire в GitHub.
-        update_github_subscription(
+        # Теперь записываем результат в GitHub.
+        update_github(
             user,
             new_expire
         )
-
-        # Финальная проверка GitHub.
-        github_after = get_github_expire(
-            user["token"]
-        )
-
-        if github_after != new_expire:
-            raise RuntimeError(
-                "GitHub проверка не пройдена.\n\n"
-                "Ожидалось:\n"
-                + str(new_expire)
-                + "\n\n"
-                "Получено:\n"
-                + str(github_after)
-            )
 
         await message.answer(
             "✅ ДНИ ВЫДАНЫ\n\n"
@@ -1377,17 +1185,16 @@ async def admin_add_days_message(
             "➕ Добавлено: "
             + str(days)
             + " дн.\n\n"
-            "Было expire:\n"
-            + str(old_expire)
+            "Было:\n"
+            + format_date(old_expire)
             + "\n\n"
-            "Стало expire:\n"
-            + str(new_expire)
-            + "\n\n"
-            "📅 До: "
+            "Стало:\n"
             + format_date(new_expire)
             + "\n\n"
-            "☁️ TOKEN.txt обновлён.\n"
-            "🔎 GitHub проверен."
+            "expire:\n"
+            + str(new_expire)
+            + "\n\n"
+            "☁️ TOKEN.txt обновлён."
         )
 
     except Exception as error:
@@ -1400,7 +1207,7 @@ async def admin_add_days_message(
 
 
 # ============================================================
-# ADMIN PROMO CREATE
+# ADMIN CREATE PROMO
 # ============================================================
 
 @dp.callback_query(
@@ -1478,15 +1285,9 @@ async def admin_create_promo_message(
         )
         return
 
-    if days <= 0:
+    if days <= 0 or max_uses <= 0:
         await message.answer(
-            "❌ Дни должны быть больше нуля."
-        )
-        return
-
-    if max_uses <= 0:
-        await message.answer(
-            "❌ Количество использований должно быть больше нуля."
+            "❌ Значения должны быть больше нуля."
         )
         return
 
@@ -1546,34 +1347,34 @@ async def admin_promos(
         )
 
     else:
-        parts = [
+        lines = [
             "📋 ПРОМОКОДЫ",
             ""
         ]
 
         for promo in promos:
-            parts.append(
+            lines.append(
                 "🎟 "
                 + promo["code"]
             )
 
-            parts.append(
+            lines.append(
                 "📅 "
                 + str(promo["days"])
                 + " дн."
             )
 
-            parts.append(
+            lines.append(
                 "👥 "
                 + str(promo["uses"])
                 + "/"
                 + str(promo["max_uses"])
             )
 
-            parts.append("")
+            lines.append("")
 
         text = "\n".join(
-            parts
+            lines
         )
 
     await callback.message.edit_text(
@@ -1610,7 +1411,7 @@ async def admin_block_start(
 
     await callback.message.edit_text(
         "🚫 БЛОКИРОВКА\n\n"
-        "Отправь Telegram ID пользователя.",
+        "Отправь Telegram ID.",
         reply_markup=back_keyboard()
     )
 
@@ -1634,7 +1435,6 @@ async def admin_block_message(
         target_id = int(
             message.text.strip()
         )
-
     except ValueError:
         await message.answer(
             "❌ ID должен быть числом."
@@ -1649,7 +1449,6 @@ async def admin_block_message(
         await message.answer(
             "❌ Пользователь не найден."
         )
-
         await state.clear()
         return
 
@@ -1659,9 +1458,7 @@ async def admin_block_message(
             True
         )
 
-        # Серверы сохраняются.
-        # Просто expire=1.
-        disable_github_subscription(
+        disable_github(
             user
         )
 
@@ -1671,7 +1468,7 @@ async def admin_block_message(
             + str(target_id)
             + "\n"
             "📦 Серверы сохранены.\n"
-            "☁️ expire=1 установлен."
+            "🔴 expire=1."
         )
 
     except Exception as error:
@@ -1709,7 +1506,7 @@ async def admin_unblock_start(
 
     await callback.message.edit_text(
         "🟢 РАЗБЛОКИРОВКА\n\n"
-        "Отправь Telegram ID пользователя.",
+        "Отправь Telegram ID.",
         reply_markup=back_keyboard()
     )
 
@@ -1733,7 +1530,6 @@ async def admin_unblock_message(
         target_id = int(
             message.text.strip()
         )
-
     except ValueError:
         await message.answer(
             "❌ ID должен быть числом."
@@ -1748,7 +1544,6 @@ async def admin_unblock_message(
         await message.answer(
             "❌ Пользователь не найден."
         )
-
         await state.clear()
         return
 
@@ -1758,40 +1553,27 @@ async def admin_unblock_message(
             False
         )
 
-        github_expire = get_github_expire(
-            user["token"]
+        expire = datetime_to_unix(
+            user["expires_at"]
         )
 
-        if github_expire is None:
-            github_expire = datetime_to_unix(
-                user["expires_at"]
-            )
-
-        if github_expire <= now_unix():
+        if expire <= now_unix():
             await message.answer(
                 "🟢 Пользователь разблокирован.\n\n"
                 "Но подписка истекла.\n"
-                "Выдай дни через «➕ Выдать дни»."
+                "Выдай ему дни через «➕ Выдать дни»."
             )
 
         else:
-            user = set_database_expire(
-                target_id,
-                github_expire
-            )
-
-            update_github_subscription(
+            update_github(
                 user,
-                github_expire
+                expire
             )
 
             await message.answer(
                 "🟢 Пользователь разблокирован.\n\n"
-                "👤 ID: "
-                + str(target_id)
-                + "\n"
                 "📅 До: "
-                + format_date(github_expire)
+                + format_date(expire)
             )
 
     except Exception as error:
@@ -1829,8 +1611,8 @@ async def admin_delete_start(
 
     await callback.message.edit_text(
         "🗑 УДАЛЕНИЕ ПОДПИСКИ\n\n"
-        "Отправь Telegram ID пользователя.\n\n"
-        "TOKEN.txt и серверы сохранятся.",
+        "Отправь Telegram ID.\n\n"
+        "Серверы и TOKEN.txt сохранятся.",
         reply_markup=back_keyboard()
     )
 
@@ -1854,7 +1636,6 @@ async def admin_delete_message(
         target_id = int(
             message.text.strip()
         )
-
     except ValueError:
         await message.answer(
             "❌ ID должен быть числом."
@@ -1869,25 +1650,21 @@ async def admin_delete_message(
         await message.answer(
             "❌ Пользователь не найден."
         )
-
         await state.clear()
         return
 
     try:
-        # ====================================================
-        # ГЛАВНОЕ:
+        # НЕ удаляем пользователя.
         # НЕ удаляем TOKEN.txt.
-        # НЕ удаляем пользователя из БД.
         # НЕ удаляем серверы.
         #
-        # Просто делаем подписку истёкшей.
-        # ====================================================
+        # Только истекает подписка.
 
-        disable_github_subscription(
+        disable_github(
             user
         )
 
-        user = set_database_expire(
+        set_expire(
             target_id,
             1
         )
@@ -1900,7 +1677,7 @@ async def admin_delete_message(
             "📦 Серверы сохранены.\n"
             "🔗 TOKEN.txt сохранён.\n"
             "🔴 expire=1.\n\n"
-            "Пользователю можно снова выдать дни."
+            "Теперь можно снова выдать дни."
         )
 
     except Exception as error:
@@ -1913,7 +1690,7 @@ async def admin_delete_message(
 
 
 # ============================================================
-# /HELP
+# COMMAND HELP
 # ============================================================
 
 @dp.message(
@@ -1928,7 +1705,7 @@ async def command_help(
 
 
 # ============================================================
-# ERROR HANDLER
+# ERROR
 # ============================================================
 
 @dp.errors()
@@ -1968,19 +1745,15 @@ async def main():
     init_db()
 
     print(
-        "🍑 Персик VPN Bot 2.0 запущен."
+        "🍑 Персик VPN Bot 3.0 запущен."
     )
 
     print(
-        "GitHub synchronization: ON"
+        "add_days() = SQLite"
     )
 
     print(
-        "GitHub is source of expire: ON"
-    )
-
-    print(
-        "Subscription files are preserved: ON"
+        "GitHub = запись результата"
     )
 
     await dp.start_polling(
@@ -1988,17 +1761,12 @@ async def main():
     )
 
 
-# ============================================================
-# RUN
-# ============================================================
-
 if __name__ == "__main__":
     try:
         asyncio.run(
             main()
         )
-
     except KeyboardInterrupt:
         print(
             "Бот остановлен."
-)
+    )
