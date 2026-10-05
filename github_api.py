@@ -28,8 +28,10 @@ def headers():
         "Authorization": "Bearer "
         + GITHUB_TOKEN,
         "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "PeachVPNBot"
+        "X-GitHub-Api-Version":
+            "2022-11-28",
+        "User-Agent":
+            "PeachVPNBot"
     }
 
 
@@ -72,11 +74,13 @@ def get_file(path):
         )
 
 
-def decode_file(file_data):
-    if not file_data:
+def get_file_content(path):
+    data = get_file(path)
+
+    if not data:
         return None
 
-    content = file_data.get(
+    content = data.get(
         "content",
         ""
     )
@@ -89,21 +93,9 @@ def decode_file(file_data):
     try:
         return base64.b64decode(
             content
-        ).decode(
-            "utf-8"
-        )
-
+        ).decode("utf-8")
     except Exception:
         return None
-
-
-def get_file_content(path):
-    data = get_file(path)
-
-    if not data:
-        return None
-
-    return decode_file(data)
 
 
 def put_file(
@@ -172,56 +164,7 @@ def put_file(
         )
 
 
-def put_file_verified(
-    path,
-    content,
-    message
-):
-    put_file(
-        path,
-        content,
-        message
-    )
-
-    actual = get_file_content(
-        path
-    )
-
-    if actual is None:
-        raise RuntimeError(
-            "GitHub файл не найден "
-            "после обновления."
-        )
-
-    if actual.strip() != content.strip():
-        raise RuntimeError(
-            "GitHub не сохранил "
-            "ожидаемое содержимое."
-        )
-
-    return True
-
-
-def verify_file(
-    path,
-    expected_content
-):
-    actual = get_file_content(
-        path
-    )
-
-    if actual is None:
-        return False
-
-    return (
-        actual.strip()
-        == expected_content.strip()
-    )
-
-
-def raw_subscription_url(
-    token
-):
+def raw_subscription_url(token):
     return (
         "https://raw.githubusercontent.com/"
         + GITHUB_OWNER
@@ -237,12 +180,113 @@ def raw_subscription_url(
     )
 
 
-def subscription_path(
-    token
-):
+def subscription_path(token):
     return (
         SUBSCRIPTIONS_DIR
         + "/"
         + token
         + ".txt"
+    )
+
+
+def get_nodes():
+    content = get_file_content(
+        "nodes.txt"
+    )
+
+    if not content:
+        return []
+
+    nodes = []
+
+    for line in content.splitlines():
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if line.startswith("#"):
+            continue
+
+        if line.startswith(
+            "vless://"
+        ):
+            nodes.append(line)
+
+        elif line.startswith(
+            "hysteria2://"
+        ):
+            nodes.append(line)
+
+        elif line.startswith(
+            "hy2://"
+        ):
+            nodes.append(line)
+
+    return nodes
+
+
+def build_subscription(
+    token,
+    expires_at
+):
+    nodes = get_nodes()
+
+    if not nodes:
+        raise RuntimeError(
+            "В nodes.txt нет серверов."
+        )
+
+    # Используем максимум первые 4 сервера.
+    nodes = nodes[:4]
+
+    lines = [
+        'id="' + token[:6] + '"',
+        "#profile-title: 🍑 Персик VPN",
+        (
+            "#announce: 🆓 Бесплатный VPN | "
+            "🇳🇱 Нидерланды • "
+            "🇩🇪 Германия • "
+            "🇰🇿 Казахстан | "
+            "⚡ VLESS + Hysteria2"
+        ),
+        (
+            "#subscription-userinfo: "
+            "upload=0; "
+            "download=0; "
+            "total=0; "
+            "expire="
+            + str(expires_at)
+        ),
+        "#profile-update-interval: 1",
+        ""
+    ]
+
+    lines.extend(nodes)
+
+    return "\n".join(lines) + "\n"
+
+
+def publish_subscription(
+    token,
+    expires_at
+):
+    content = build_subscription(
+        token,
+        expires_at
+    )
+
+    path = subscription_path(
+        token
+    )
+
+    put_file(
+        path,
+        content,
+        "Update subscription "
+        + token[:6]
+    )
+
+    return raw_subscription_url(
+        token
         )
