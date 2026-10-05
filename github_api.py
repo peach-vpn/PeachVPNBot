@@ -2,13 +2,17 @@ import base64
 import json
 import urllib.error
 import urllib.request
+import uuid
+import random
+import string
 
 from config import (
     GITHUB_TOKEN,
     GITHUB_OWNER,
     GITHUB_REPO,
     GITHUB_BRANCH,
-    SUBSCRIPTIONS_DIR
+    SUBSCRIPTIONS_DIR,
+    NODES_FILE
 )
 
 
@@ -25,13 +29,10 @@ def api_url(path):
 
 def headers():
     return {
-        "Authorization": "Bearer "
-        + GITHUB_TOKEN,
+        "Authorization": "Bearer " + GITHUB_TOKEN,
         "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version":
-            "2022-11-28",
-        "User-Agent":
-            "PeachVPNBot"
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "PeachVPNBot"
     }
 
 
@@ -52,9 +53,7 @@ def get_file(path):
             timeout=30
         ) as response:
             return json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
@@ -145,9 +144,7 @@ def put_file(
             timeout=30
         ) as response:
             return json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
@@ -191,7 +188,7 @@ def subscription_path(token):
 
 def get_nodes():
     content = get_file_content(
-        "nodes.txt"
+        NODES_FILE
     )
 
     if not content:
@@ -208,36 +205,57 @@ def get_nodes():
         if line.startswith("#"):
             continue
 
-        if line.startswith(
-            "vless://"
-        ):
-            nodes.append(line)
-
-        elif line.startswith(
-            "hysteria2://"
-        ):
-            nodes.append(line)
-
-        elif line.startswith(
-            "hy2://"
+        if (
+            line.startswith("vless://")
+            or line.startswith("hysteria2://")
+            or line.startswith("hy2://")
         ):
             nodes.append(line)
 
     return nodes
 
 
-def build_subscription(
-    token,
-    expires_at
+def generate_dead_vless():
+    fake_uuid = str(
+        uuid.uuid4()
+    )
+
+    random_host = (
+        "dead-"
+        + "".join(
+            random.choice(
+                string.ascii_lowercase
+                + string.digits
+            )
+            for _ in range(12)
+        )
+        + ".invalid"
+    )
+
+    return (
+        "vless://"
+        + fake_uuid
+        + "@"
+        + random_host
+        + ":443"
+        + "?type=tcp"
+        + "&security=tls"
+        + "&sni="
+        + random_host
+        + "#expired"
+    )
+
+
+def build_active_subscription(
+    token
 ):
     nodes = get_nodes()
 
     if not nodes:
         raise RuntimeError(
-            "В nodes.txt нет серверов."
+            "В nodes.txt нет VLESS/Hysteria2 серверов."
         )
 
-    # Используем максимум первые 4 сервера.
     nodes = nodes[:4]
 
     lines = [
@@ -246,18 +264,10 @@ def build_subscription(
         (
             "#announce: 🆓 Бесплатный VPN | "
             "🇳🇱 Нидерланды • "
-            "🇩🇪 Германия • "
-            "🇰🇿 Казахстан | "
+            "🇩🇪 Германия | "
             "⚡ VLESS + Hysteria2"
         ),
-        (
-            "#subscription-userinfo: "
-            "upload=0; "
-            "download=0; "
-            "total=0; "
-            "expire="
-            + str(expires_at)
-        ),
+        "#subscription-userinfo: upload=0; download=0; total=0",
         "#profile-update-interval: 1",
         ""
     ]
@@ -267,26 +277,53 @@ def build_subscription(
     return "\n".join(lines) + "\n"
 
 
-def publish_subscription(
-    token,
-    expires_at
+def build_expired_subscription(
+    token
 ):
-    content = build_subscription(
-        token,
-        expires_at
-    )
+    dead_vless = generate_dead_vless()
 
-    path = subscription_path(
+    lines = [
+        'id="' + token[:6] + '"',
+        "#profile-title: 🍑 Подписка закончилась иди нахуй!",
+        "#announce: 🔴 Подписка закончилась",
+        "#subscription-userinfo: upload=0; download=0; total=0",
+        "#profile-update-interval: 1",
+        "",
+        dead_vless
+    ]
+
+    return "\n".join(lines) + "\n"
+
+
+def publish_active_subscription(
+    token
+):
+    content = build_active_subscription(
         token
     )
 
     put_file(
-        path,
+        subscription_path(token),
         content,
-        "Update subscription "
+        "Activate subscription "
         + token[:6]
     )
 
-    return raw_subscription_url(
+    return raw_subscription_url(token)
+
+
+def publish_expired_subscription(
+    token
+):
+    content = build_expired_subscription(
         token
-        )
+    )
+
+    put_file(
+        subscription_path(token),
+        content,
+        "Expire subscription "
+        + token[:6]
+    )
+
+    return raw_subscription_url(token)
