@@ -52,6 +52,12 @@ def init_db():
 
     add_column_if_missing(
         "users",
+        "subscription_url",
+        "TEXT"
+    )
+
+    add_column_if_missing(
+        "users",
         "expires_at",
         "INTEGER NOT NULL DEFAULT 0"
     )
@@ -64,21 +70,17 @@ def init_db():
 
     add_column_if_missing(
         "users",
-        "blocked",
-        "INTEGER NOT NULL DEFAULT 0"
-    )
-
-    add_column_if_missing(
-        "users",
         "active",
         "INTEGER NOT NULL DEFAULT 0"
     )
 
     add_column_if_missing(
         "users",
-        "subscription_url",
-        "TEXT"
+        "blocked",
+        "INTEGER NOT NULL DEFAULT 0"
     )
+
+    migrate_old_dates()
 
 
 def add_column_if_missing(
@@ -111,6 +113,75 @@ def add_column_if_missing(
     conn.close()
 
 
+def convert_expire(value):
+    if value is None:
+        return 0
+
+    value = str(value).strip()
+
+    if not value:
+        return 0
+
+    # Уже Unix timestamp
+    try:
+        return int(float(value))
+    except ValueError:
+        pass
+
+    # Старый ISO-формат:
+    # 2029-07-30T16:46:46.447591+00:00
+    try:
+        dt = datetime.fromisoformat(value)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(
+                tzinfo=timezone.utc
+            )
+
+        return int(
+            dt.timestamp()
+        )
+
+    except Exception:
+        return 0
+
+
+def migrate_old_dates():
+    conn = connect()
+
+    rows = conn.execute(
+        """
+        SELECT telegram_id, expires_at
+        FROM users
+        """
+    ).fetchall()
+
+    for row in rows:
+        old_value = row["expires_at"]
+
+        new_value = convert_expire(
+            old_value
+        )
+
+        # Обновляем только если значение
+        # действительно отличается.
+        if str(old_value) != str(new_value):
+            conn.execute(
+                """
+                UPDATE users
+                SET expires_at = ?
+                WHERE telegram_id = ?
+                """,
+                (
+                    new_value,
+                    row["telegram_id"]
+                )
+            )
+
+    conn.commit()
+    conn.close()
+
+
 def get_user(telegram_id):
     conn = connect()
 
@@ -125,6 +196,35 @@ def get_user(telegram_id):
 
     conn.close()
 
+    if not user:
+        return None
+
+    # Дополнительная защита:
+    # если старая дата ещё осталась —
+    # конвертируем её прямо при чтении.
+    value = user["expires_at"]
+    converted = convert_expire(value)
+
+    if str(value) != str(converted):
+        conn = connect()
+
+        conn.execute(
+            """
+            UPDATE users
+            SET expires_at = ?
+            WHERE telegram_id = ?
+            """,
+            (
+                converted,
+                telegram_id
+            )
+        )
+
+        conn.commit()
+        conn.close()
+
+        user = get_user(telegram_id)
+
     return user
 
 
@@ -135,7 +235,10 @@ def create_user(
     user = get_user(telegram_id)
 
     if user:
-        if username is not None:
+        if (
+            username is not None
+            and user["username"] != username
+        ):
             conn = connect()
 
             conn.execute(
@@ -221,19 +324,22 @@ def activate_subscription(
     telegram_id,
     days
 ):
+    user = get_user(
+        telegram_id
+    )
+
+    if not user:
+        return None
+
     now = int(
         datetime.now(
             timezone.utc
         ).timestamp()
     )
 
-    user = get_user(telegram_id)
-
-    if not user:
-        return None
-
-    new_expire = now + (
-        days * 24 * 60 * 60
+    new_expire = (
+        now
+        + days * 24 * 60 * 60
     )
 
     new_count = (
@@ -261,7 +367,9 @@ def activate_subscription(
     conn.commit()
     conn.close()
 
-    return get_user(telegram_id)
+    return get_user(
+        telegram_id
+    )
 
 
 def deactivate_expired():
@@ -291,7 +399,9 @@ def deactivate_expired():
 def can_get_subscription(
     telegram_id
 ):
-    user = get_user(telegram_id)
+    user = get_user(
+        telegram_id
+    )
 
     if not user:
         return False
@@ -312,10 +422,12 @@ def can_get_subscription(
         ).timestamp()
     )
 
-    expires = int(
+    expires = convert_expire(
         user["expires_at"]
     )
 
+    # Пока подписка активна —
+    # следующую выдавать нельзя.
     if expires > now:
         return False
 
@@ -325,7 +437,9 @@ def can_get_subscription(
 def next_issue_days(
     telegram_id
 ):
-    user = get_user(telegram_id)
+    user = get_user(
+        telegram_id
+    )
 
     if not user:
         return None
@@ -333,9 +447,6 @@ def next_issue_days(
     count = int(
         user["issue_count"]
     )
-
-    if count >= 3:
-        return None
 
     if count == 0:
         return 30
