@@ -9,7 +9,7 @@ from config import (
     GITHUB_OWNER,
     GITHUB_REPO,
     GITHUB_BRANCH,
-    SUBSCRIPTIONS_DIR
+    SUBSCRIPTIONS_DIR,
 )
 
 
@@ -26,14 +26,10 @@ def api_url(path):
 
 def headers():
     return {
-        "Authorization":
-            "Bearer " + GITHUB_TOKEN,
-        "Accept":
-            "application/vnd.github+json",
-        "X-GitHub-Api-Version":
-            "2022-11-28",
-        "User-Agent":
-            "PeachVPNBot"
+        "Authorization": "Bearer " + GITHUB_TOKEN,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "PeachVPNBot",
     }
 
 
@@ -45,18 +41,16 @@ def get_file(path):
 
     request = urllib.request.Request(
         api_url(path),
-        headers=headers()
+        headers=headers(),
     )
 
     try:
         with urllib.request.urlopen(
             request,
-            timeout=30
+            timeout=30,
         ) as response:
             return json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
@@ -65,7 +59,7 @@ def get_file(path):
 
         body = error.read().decode(
             "utf-8",
-            errors="replace"
+            errors="replace",
         )
 
         raise RuntimeError(
@@ -84,18 +78,19 @@ def get_file_content(path):
 
     content = data.get(
         "content",
-        ""
+        "",
     )
 
     content = content.replace(
         "\n",
-        ""
+        "",
     )
 
     try:
         return base64.b64decode(
             content
         ).decode("utf-8")
+
     except Exception:
         return None
 
@@ -103,7 +98,7 @@ def get_file_content(path):
 def put_file(
     path,
     content,
-    message
+    message,
 ):
     if not GITHUB_TOKEN:
         raise RuntimeError(
@@ -117,7 +112,7 @@ def put_file(
         "content": base64.b64encode(
             content.encode("utf-8")
         ).decode("ascii"),
-        "branch": GITHUB_BRANCH
+        "branch": GITHUB_BRANCH,
     }
 
     if old_file:
@@ -135,27 +130,24 @@ def put_file(
         data=data,
         headers={
             **headers(),
-            "Content-Type":
-                "application/json"
+            "Content-Type": "application/json",
         },
-        method="PUT"
+        method="PUT",
     )
 
     try:
         with urllib.request.urlopen(
             request,
-            timeout=30
+            timeout=30,
         ) as response:
             return json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
         body = error.read().decode(
             "utf-8",
-            errors="replace"
+            errors="replace",
         )
 
         raise RuntimeError(
@@ -217,12 +209,15 @@ def get_nodes():
         ):
             nodes.append(line)
 
-    return nodes[:4]
+    # ВАЖНО:
+    # не ограничиваем количество серверов.
+    # nodes.txt = главный список серверов.
+    return nodes
 
 
 def build_active_subscription(
     token,
-    expires_at
+    expires_at,
 ):
     nodes = get_nodes()
 
@@ -233,11 +228,17 @@ def build_active_subscription(
 
     lines = [
         'id="' + token[:6] + '"',
+
         "#profile-title: 🍑 Персик VPN",
+
         (
             "#announce: 🆓 Бесплатный VPN | "
-            "⚡ VLESS + Hysteria2"
+            "🇳🇱 Нидерланды • 🇩🇪 Германия | "
+            "⚡ VLESS + Hysteria2 | "
+            "🔄 Серверы могут меняться "
+            "и временно отключаться"
         ),
+
         (
             "#subscription-userinfo: "
             "upload=0; "
@@ -246,8 +247,10 @@ def build_active_subscription(
             "expire="
             + str(expires_at)
         ),
+
         "#profile-update-interval: 1",
-        ""
+
+        "",
     ]
 
     lines.extend(nodes)
@@ -291,11 +294,11 @@ def build_expired_subscription():
 
 def publish_active(
     token,
-    expires_at
+    expires_at,
 ):
     content = build_active_subscription(
         token,
-        expires_at
+        expires_at,
     )
 
     path = subscription_path(
@@ -305,8 +308,8 @@ def publish_active(
     put_file(
         path,
         content,
-        "Activate subscription "
-        + token[:6]
+        "Update subscription "
+        + token[:6],
     )
 
     return raw_subscription_url(
@@ -314,9 +317,7 @@ def publish_active(
     )
 
 
-def publish_expired(
-    token
-):
+def publish_expired(token):
     content = build_expired_subscription()
 
     path = subscription_path(
@@ -327,9 +328,9 @@ def publish_expired(
         path,
         content,
         "Expire subscription "
-        + token[:6]
+        + token[:6],
     )
 
     return raw_subscription_url(
         token
-)
+    )
