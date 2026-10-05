@@ -90,7 +90,6 @@ def get_file_content(path):
         return base64.b64decode(
             content
         ).decode("utf-8")
-
     except Exception:
         return None
 
@@ -158,6 +157,65 @@ def put_file(
         )
 
 
+def delete_file(path, message):
+    if not GITHUB_TOKEN:
+        raise RuntimeError(
+            "GITHUB_TOKEN не задан."
+        )
+
+    old_file = get_file(path)
+
+    if not old_file:
+        return True
+
+    sha = old_file.get("sha")
+
+    if not sha:
+        raise RuntimeError(
+            "Не найден SHA файла."
+        )
+
+    payload = {
+        "message": message,
+        "sha": sha,
+        "branch": GITHUB_BRANCH,
+    }
+
+    data = json.dumps(
+        payload
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        api_url(path),
+        data=data,
+        headers={
+            **headers(),
+            "Content-Type": "application/json",
+        },
+        method="DELETE",
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=30,
+        ):
+            return True
+
+    except urllib.error.HTTPError as error:
+        body = error.read().decode(
+            "utf-8",
+            errors="replace",
+        )
+
+        raise RuntimeError(
+            "GitHub API "
+            + str(error.code)
+            + ": "
+            + body
+        )
+
+
 def raw_subscription_url(token):
     return (
         "https://raw.githubusercontent.com/"
@@ -196,22 +254,17 @@ def get_nodes():
     for raw_line in content.splitlines():
         line = raw_line.strip()
 
-        # Пустые строки пропускаем
         if not line:
             continue
 
-        # Комментарии и заголовки пропускаем
         if line.startswith("#"):
             continue
 
-        # Берём только реальные VLESS-ноды
-        if line.startswith("vless://"):
-            nodes.append(line)
-
-        elif line.startswith("hysteria2://"):
-            nodes.append(line)
-
-        elif line.startswith("hy2://"):
+        if (
+            line.startswith("vless://")
+            or line.startswith("hysteria2://")
+            or line.startswith("hy2://")
+        ):
             nodes.append(line)
 
     return nodes
@@ -225,7 +278,7 @@ def build_active_subscription(
 
     if not nodes:
         raise RuntimeError(
-            "В nodes.txt не найдено ни одного сервера."
+            "В nodes.txt нет серверов."
         )
 
     lines = [
@@ -284,12 +337,10 @@ def random_vless():
 
 
 def build_expired_subscription():
-    garbage_vless = random_vless()
-
     return (
         "Подписка закончилась "
         "иди нахуй!\n\n"
-        + garbage_vless
+        + random_vless()
         + "\n"
     )
 
@@ -303,12 +354,8 @@ def publish_active(
         expires_at,
     )
 
-    path = subscription_path(
-        token
-    )
-
     put_file(
-        path,
+        subscription_path(token),
         content,
         "Update subscription "
         + token[:6],
@@ -320,19 +367,21 @@ def publish_active(
 
 
 def publish_expired(token):
-    content = build_expired_subscription()
-
-    path = subscription_path(
-        token
-    )
-
     put_file(
-        path,
-        content,
+        subscription_path(token),
+        build_expired_subscription(),
         "Expire subscription "
         + token[:6],
     )
 
     return raw_subscription_url(
         token
+    )
+
+
+def delete_subscription(token):
+    return delete_file(
+        subscription_path(token),
+        "Delete subscription "
+        + token[:6],
     )
