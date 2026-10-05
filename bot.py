@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 from datetime import datetime, timezone
 
@@ -27,13 +28,15 @@ from database import (
 
 from github_api import (
     put_file,
-    delete_file,
     raw_subscription_url,
     subscription_path,
 )
 
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN
+)
+
 dp = Dispatcher()
 
 admin_states = {}
@@ -48,7 +51,7 @@ ANNOUNCE = (
     "🇰🇿 Казахстан"
 )
 
-UPDATE_INTERVAL = "#profile-update-interval: 1"
+UPDATE_INTERVAL = 1
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
@@ -61,7 +64,9 @@ NODES_FILE = os.path.join(
 
 
 def load_nodes():
-    if not os.path.exists(NODES_FILE):
+    if not os.path.exists(
+        NODES_FILE
+    ):
         return ""
 
     with open(
@@ -87,10 +92,10 @@ def load_nodes():
     return "\n".join(result)
 
 
-def unix_expire(expires_at):
+def parse_datetime(value):
     try:
         dt = datetime.fromisoformat(
-            expires_at
+            value
         )
 
         if dt.tzinfo is None:
@@ -98,69 +103,132 @@ def unix_expire(expires_at):
                 tzinfo=timezone.utc
             )
 
-        return int(
-            dt.timestamp()
-        )
+        return dt
 
     except Exception:
+        return None
+
+
+def unix_expire(expires_at):
+    dt = parse_datetime(
+        expires_at
+    )
+
+    if not dt:
         return 0
 
+    return int(
+        dt.timestamp()
+    )
 
-def format_date(expires_at):
-    try:
-        dt = datetime.fromisoformat(
-            expires_at
-        )
 
-        if dt.tzinfo is None:
-            dt = dt.replace(
-                tzinfo=timezone.utc
-            )
+def format_date(
+    expires_at
+):
+    dt = parse_datetime(
+        expires_at
+    )
 
-        return dt.strftime(
-            "%d.%m.%Y"
-        )
-
-    except Exception:
+    if not dt:
         return "Н/Д"
 
+    return dt.strftime(
+        "%d.%m.%Y"
+    )
 
-def remaining_days(expires_at):
-    try:
-        dt = datetime.fromisoformat(
-            expires_at
-        )
 
-        if dt.tzinfo is None:
-            dt = dt.replace(
-                tzinfo=timezone.utc
-            )
+def format_datetime_utc(
+    expires_at
+):
+    dt = parse_datetime(
+        expires_at
+    )
 
-        now = datetime.now(
-            timezone.utc
-        )
+    if not dt:
+        return "Н/Д"
 
-        seconds = (
-            dt - now
-        ).total_seconds()
+    return dt.strftime(
+        "%d.%m.%Y %H:%M UTC"
+    )
 
-        if seconds <= 0:
-            return 0
 
-        return max(
-            1,
-            int(
-                seconds / 86400
-            )
-        )
+def remaining_days(
+    expires_at
+):
+    dt = parse_datetime(
+        expires_at
+    )
 
-    except Exception:
+    if not dt:
         return 0
 
+    now = datetime.now(
+        timezone.utc
+    )
 
-def make_subscription(user):
-    token = user["token"]
+    seconds = (
+        dt - now
+    ).total_seconds()
 
+    if seconds <= 0:
+        return 0
+
+    return max(
+        1,
+        math.ceil(
+            seconds / 86400
+        )
+    )
+
+
+def subscription_content(
+    user,
+    nodes=None,
+    expired=False
+):
+    if nodes is None:
+        nodes = load_nodes()
+
+    if expired:
+        expire = int(
+            datetime.now(
+                timezone.utc
+            ).timestamp()
+        )
+    else:
+        expire = unix_expire(
+            user["expires_at"]
+        )
+
+    content = (
+        "#profile-title: "
+        + PROFILE_TITLE
+        + "\n"
+        "#announce: "
+        + ANNOUNCE
+        + "\n"
+        "#subscription-userinfo: "
+        "upload=0; "
+        "download=0; "
+        "total=0; "
+        "expire="
+        + str(expire)
+        + "\n"
+        "#profile-update-interval: "
+        + str(UPDATE_INTERVAL)
+        + "\n\n"
+    )
+
+    if nodes and not expired:
+        content += nodes
+        content += "\n"
+
+    return content
+
+
+def make_subscription(
+    user
+):
     nodes = load_nodes()
 
     if not nodes:
@@ -168,45 +236,49 @@ def make_subscription(user):
             "nodes.txt пуст или не найден"
         )
 
-    content = (
-        "{}\n"
-        "{}\n"
-        "#subscription-userinfo: "
-        "upload=0; "
-        "download={}; "
-        "expire={}\n"
-        "{}\n\n"
-        'id="{}"\n\n'
-        "{}\n"
-    ).format(
-        PROFILE_TITLE,
-        ANNOUNCE,
-        user["total_bytes"],
-        unix_expire(
-            user["expires_at"]
-        ),
-        UPDATE_INTERVAL,
-        token[:6],
-        nodes
+    content = subscription_content(
+        user,
+        nodes=nodes,
+        expired=False
     )
 
     path = subscription_path(
-        token
+        user["token"]
     )
 
     put_file(
         path,
         content,
-        "Update subscription"
+        "Update PeachVPN subscription"
     )
 
     return raw_subscription_url(
-        token
+        user["token"]
+    )
+
+
+def invalidate_subscription(
+    user
+):
+    content = subscription_content(
+        user,
+        nodes="",
+        expired=True
+    )
+
+    path = subscription_path(
+        user["token"]
+    )
+
+    put_file(
+        path,
+        content,
+        "Expire PeachVPN subscription"
     )
 
 
 def main_keyboard(
-    is_admin=False
+    user_id
 ):
     rows = [
         [
@@ -235,7 +307,7 @@ def main_keyboard(
         ],
     ]
 
-    if is_admin:
+    if user_id == ADMIN_ID:
         rows.append(
             [
                 types.InlineKeyboardButton(
@@ -337,6 +409,9 @@ async def send_main_menu(
     )
 
     if not user:
+        await message.answer(
+            "Сначала нажми /start."
+        )
         return
 
     if user["blocked"]:
@@ -345,9 +420,16 @@ async def send_main_menu(
         )
         return
 
+    status = (
+        "🟢"
+        if user["active"]
+        else "🔴"
+    )
+
     text = (
         "🍑 ПЕРСИК VPN\n\n"
-        "🟢 Подписка: Free\n"
+        + status
+        + " Подписка: Free\n"
         "📅 До: "
         + format_date(
             user["expires_at"]
@@ -361,7 +443,7 @@ async def send_main_menu(
     await message.answer(
         text,
         reply_markup=main_keyboard(
-            user["telegram_id"] == ADMIN_ID
+            user["telegram_id"]
         )
     )
 
@@ -432,6 +514,11 @@ async def back(
 ):
     await callback.answer()
 
+    admin_states.pop(
+        callback.from_user.id,
+        None
+    )
+
     user = get_user(
         callback.from_user.id
     )
@@ -476,14 +563,23 @@ async def subscription(
         callback.from_user.id
     )
 
+    status = (
+        "Активна"
+        if user["active"]
+        else "Истекла"
+    )
+
+    status_icon = (
+        "🟢"
+        if user["active"]
+        else "🔴"
+    )
+
     text = (
         "🍑 МОЯ ПОДПИСКА\n\n"
-        "🟢 Статус: "
-        + (
-            "Активна"
-            if user["active"]
-            else "Истекла"
-        )
+        + status_icon
+        + " Статус: "
+        + status
         + "\n\n"
         "🆓 Тариф: Free\n"
         "📦 Трафик: Безлимит\n"
@@ -495,10 +591,10 @@ async def subscription(
         )
         + "\n"
         "📅 До: "
-        + format_date(
+        + format_datetime_utc(
             user["expires_at"]
         )
-        + " UTC\n\n"
+        + "\n\n"
         "🔗 Ссылка подписки:\n"
         + (
             user["subscription_url"]
@@ -553,8 +649,19 @@ async def refresh_subscription(
             url
         )
 
+        user = get_user(
+            callback.from_user.id
+        )
+
         await callback.message.answer(
-            "✅ Подписка обновлена!",
+            "✅ Подписка обновлена!\n\n"
+            "📅 До: "
+            + format_datetime_utc(
+                user["expires_at"]
+            )
+            + "\n\n"
+            "🔗 "
+            + user["subscription_url"],
             reply_markup=subscription_keyboard()
         )
 
@@ -592,7 +699,8 @@ async def delete_subscription_confirm(
 
     await callback.message.answer(
         "⚠️ Удалить подписку?\n\n"
-        "Ссылка перестанет работать.",
+        "При обновлении Happ она станет "
+        "недействительной.",
         reply_markup=keyboard
     )
 
@@ -616,14 +724,10 @@ async def delete_subscription_yes(
         return
 
     try:
-        if user["token"]:
-            await asyncio.to_thread(
-                delete_file,
-                subscription_path(
-                    user["token"]
-                ),
-                "Delete subscription"
-            )
+        await asyncio.to_thread(
+            invalidate_subscription,
+            user
+        )
     except Exception:
         pass
 
@@ -633,8 +737,13 @@ async def delete_subscription_yes(
 
     await callback.message.answer(
         "🗑 Подписка удалена.\n\n"
-        "Чтобы получить новую подписку, "
-        "нажми /start."
+        "В Happ после обновления она "
+        "станет недействительной.\n\n"
+        "Если профиль всё ещё виден в Happ, "
+        "его нужно удалить в самом Happ.",
+        reply_markup=main_keyboard(
+            callback.from_user.id
+        )
     )
 
 
@@ -667,7 +776,7 @@ async def help_menu(
         "❓ ПОМОЩЬ\n\n"
         "1️⃣ Открой «Моя подписка».\n"
         "2️⃣ Скопируй ссылку подписки.\n"
-        "3️⃣ Добавь ссылку в Happ.\n\n"
+        "3️⃣ Добавь её в Happ.\n\n"
         "🔄 Серверы обновляются автоматически.\n\n"
         "🎟 Есть промокод?\n"
         "Открой раздел «Промокод»."
@@ -684,6 +793,11 @@ async def admin_panel(
 
     if callback.from_user.id != ADMIN_ID:
         return
+
+    admin_states.pop(
+        callback.from_user.id,
+        None
+    )
 
     await callback.message.answer(
         "🔐 АДМИН-ПАНЕЛЬ\n\n"
@@ -755,7 +869,7 @@ async def admin_users(
             + status
             + "\n"
             "📅 До: "
-            + format_date(
+            + format_datetime_utc(
                 user["expires_at"]
             )
             + "\n\n"
@@ -944,8 +1058,13 @@ async def text_handler(
             code = parts[0]
 
             try:
-                days = int(parts[1])
-                max_uses = int(parts[2])
+                days = int(
+                    parts[1]
+                )
+
+                max_uses = int(
+                    parts[2]
+                )
 
                 if days <= 0:
                     raise ValueError
@@ -1004,8 +1123,13 @@ async def text_handler(
                 return
 
             try:
-                target_id = int(parts[0])
-                days = int(parts[1])
+                target_id = int(
+                    parts[0]
+                )
+
+                days = int(
+                    parts[1]
+                )
 
                 if days <= 0:
                     raise ValueError
@@ -1063,7 +1187,7 @@ async def text_handler(
                 + str(days)
                 + "\n"
                 "📅 До: "
-                + format_date(
+                + format_datetime_utc(
                     user["expires_at"]
                 ),
                 reply_markup=admin_keyboard()
@@ -1073,7 +1197,10 @@ async def text_handler(
 
         if state == "admin_delete":
             try:
-                target_id = int(text)
+                target_id = int(
+                    text
+                )
+
             except ValueError:
                 await message.answer(
                     "❌ ID должен быть числом."
@@ -1097,14 +1224,10 @@ async def text_handler(
                 return
 
             try:
-                if user["token"]:
-                    await asyncio.to_thread(
-                        delete_file,
-                        subscription_path(
-                            user["token"]
-                        ),
-                        "Admin delete subscription"
-                    )
+                await asyncio.to_thread(
+                    invalidate_subscription,
+                    user
+                )
             except Exception:
                 pass
 
@@ -1126,7 +1249,10 @@ async def text_handler(
             "admin_unblock"
         ):
             try:
-                target_id = int(text)
+                target_id = int(
+                    text
+                )
+
             except ValueError:
                 await message.answer(
                     "❌ ID должен быть числом."
@@ -1149,14 +1275,10 @@ async def text_handler(
 
             if blocking:
                 try:
-                    if user["token"]:
-                        await asyncio.to_thread(
-                            delete_file,
-                            subscription_path(
-                                user["token"]
-                            ),
-                            "Block user subscription"
-                        )
+                    await asyncio.to_thread(
+                        invalidate_subscription,
+                        user
+                    )
                 except Exception:
                     pass
 
@@ -1216,7 +1338,7 @@ async def text_handler(
                 "❌ "
                 + str(result),
                 reply_markup=main_keyboard(
-                    user_id == ADMIN_ID
+                    user_id
                 )
             )
             return
@@ -1254,11 +1376,11 @@ async def text_handler(
             + str(days)
             + "\n"
             "📅 До: "
-            + format_date(
+            + format_datetime_utc(
                 updated["expires_at"]
             ),
             reply_markup=main_keyboard(
-                user_id == ADMIN_ID
+                user_id
             )
         )
 
@@ -1292,7 +1414,9 @@ async def main():
         "🍑 Персик VPN Bot запущен"
     )
 
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot
+    )
 
 
 if __name__ == "__main__":
