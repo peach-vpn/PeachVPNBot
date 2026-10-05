@@ -86,7 +86,8 @@ def put_file(
         data=data,
         headers={
             **headers(),
-            "Content-Type": "application/json"
+            "Content-Type":
+                "application/json"
         },
         method="PUT"
     )
@@ -129,7 +130,8 @@ def delete_file(
         data=data,
         headers={
             **headers(),
-            "Content-Type": "application/json"
+            "Content-Type":
+                "application/json"
         },
         method="DELETE"
     )
@@ -143,10 +145,12 @@ def delete_file(
 
 def raw_subscription_url(token):
     return (
-        "https://"
+        "https://raw.githubusercontent.com/"
         + GITHUB_OWNER
-        + ".github.io/"
+        + "/"
         + GITHUB_REPO
+        + "/"
+        + GITHUB_BRANCH
         + "/"
         + SUBSCRIPTIONS_DIR
         + "/"
