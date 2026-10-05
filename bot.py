@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import secrets
+
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F
@@ -27,6 +29,7 @@ from database import (
     save_subscription_url,
     set_expired_page,
     set_blocked,
+    replace_token,
     list_users,
 )
 
@@ -34,8 +37,13 @@ from github_api import (
     publish_active,
     publish_expired,
     raw_subscription_url,
+    delete_subscription,
 )
 
+
+# =========================================================
+# НАСТРОЙКИ
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,7 +62,9 @@ dp = Dispatcher()
 
 def now_timestamp():
     return int(
-        datetime.now(timezone.utc).timestamp()
+        datetime.now(
+            timezone.utc
+        ).timestamp()
     )
 
 
@@ -79,13 +89,6 @@ def is_admin(user_id):
     return int(user_id) == int(ADMIN_ID)
 
 
-def is_blocked(user):
-    if not user:
-        return False
-
-    return bool(user["blocked"])
-
-
 def subscription_active(user):
     if not user:
         return False
@@ -106,25 +109,8 @@ def subscription_active(user):
     return expires_at > now_timestamp()
 
 
-def remaining_seconds(user):
-    try:
-        return (
-            int(user["expires_at"])
-            - now_timestamp()
-        )
-    except Exception:
-        return 0
-
-
-def remaining_hours(user):
-    return (
-        remaining_seconds(user)
-        / 3600
-    )
-
-
 # =========================================================
-# КЛАВИАТУРЫ
+# ГЛАВНАЯ КЛАВИАТУРА
 # =========================================================
 
 def main_keyboard(user_id):
@@ -158,6 +144,10 @@ def main_keyboard(user_id):
     )
 
 
+# =========================================================
+# КЛАВИАТУРА МОЕЙ ПОДПИСКИ
+# =========================================================
+
 def subscription_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -169,6 +159,12 @@ def subscription_keyboard():
             ],
             [
                 InlineKeyboardButton(
+                    text="🗑 Удалить подписку",
+                    callback_data="delete_subscription"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="⬅️ Назад",
                     callback_data="back_home"
                 )
@@ -176,6 +172,10 @@ def subscription_keyboard():
         ]
     )
 
+
+# =========================================================
+# ПОСЛЕ ОБНОВЛЕНИЯ
+# =========================================================
 
 def updated_keyboard():
     return InlineKeyboardMarkup(
@@ -190,6 +190,10 @@ def updated_keyboard():
     )
 
 
+# =========================================================
+# ССЫЛКА
+# =========================================================
+
 def link_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -202,6 +206,10 @@ def link_keyboard():
         ]
     )
 
+
+# =========================================================
+# АДМИН
+# =========================================================
 
 def admin_keyboard():
     return InlineKeyboardMarkup(
@@ -223,7 +231,7 @@ def admin_keyboard():
 
 
 # =========================================================
-# ТЕКСТ ГЛАВНОГО МЕНЮ
+# ГЛАВНОЕ МЕНЮ
 # =========================================================
 
 def home_text(user):
@@ -240,27 +248,33 @@ def home_text(user):
         )
 
     if user["expired_page"]:
-        status = "🔴 Подписка закончилась"
-        until = "—"
-    else:
-        if subscription_active(user):
-            status = "🟢 Подписка: Free"
-            until = format_date(
+        return (
+            "🍑 ПЕРСИК VPN\n\n"
+            "🔴 Подписка закончилась\n"
+            "📅 До: —\n"
+            "📦 Трафик: Безлимит\n\n"
+            "👇 Выбери действие:"
+        )
+
+    if subscription_active(user):
+        return (
+            "🍑 ПЕРСИК VPN\n\n"
+            "🟢 Подписка: Free\n"
+            "📅 До: "
+            + format_date(
                 user["expires_at"]
             )
-        else:
-            status = "🔴 Подписка закончилась"
-            until = "—"
+            + "\n"
+            "📦 Трафик: Безлимит\n\n"
+            "👇 Выбери действие:"
+        )
 
     return (
         "🍑 ПЕРСИК VPN\n\n"
-        + status
-        + "\n"
-        + "📅 До: "
-        + until
-        + "\n"
-        + "📦 Трафик: Безлимит\n\n"
-        + "👇 Выбери действие:"
+        "🔴 Подписка закончилась\n"
+        "📅 До: —\n"
+        "📦 Трафик: Безлимит\n\n"
+        "👇 Выбери действие:"
     )
 
 
@@ -315,7 +329,7 @@ def subscription_text(user):
 
 
 # =========================================================
-# ПОЛУЧЕНИЕ / СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ
+# СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ
 # =========================================================
 
 async def get_or_create_user(
@@ -334,9 +348,6 @@ async def get_or_create_user(
         username
     )
 
-    # Первая выдача подписки.
-    # Повторно существующему пользователю
-    # подписка здесь НЕ выдаётся.
     if (
         user
         and str(user["expires_at"]) == "0"
@@ -364,7 +375,7 @@ async def get_or_create_user(
 
 
 # =========================================================
-# START
+# /START
 # =========================================================
 
 @dp.message(CommandStart())
@@ -473,8 +484,8 @@ async def refresh_subscription_handler(
             - now_timestamp()
         )
 
-        # В последние 24 часа подписка
-        # должна перейти в оконченный режим.
+        # Если осталось 24 часа или меньше,
+        # подписка переводится в оконченный режим.
         if remaining <= (
             EXPIRED_WARNING_HOURS * 3600
         ):
@@ -502,15 +513,13 @@ async def refresh_subscription_handler(
             )
             return
 
-        # Проверяем nodes.txt и полностью
-        # пересобираем существующий файл.
+        # Пересобираем тот же файл.
+        # TOKEN и URL остаются прежними.
         url = publish_active(
             user["token"],
             expires_at
         )
 
-        # URL тот же самый, но сохраняем его
-        # на случай старой базы.
         save_subscription_url(
             callback.from_user.id,
             url
@@ -533,7 +542,191 @@ async def refresh_subscription_handler(
         )
 
         await callback.answer(
-            "Ошибка обновления.",
+            "Ошибка обновления:\n"
+            + str(error),
+            show_alert=True
+        )
+
+
+# =========================================================
+# УДАЛИТЬ ПОДПИСКУ
+# =========================================================
+
+@dp.callback_query(
+    F.data == "delete_subscription"
+)
+async def delete_subscription_handler(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
+
+    if not user:
+        await callback.answer(
+            "Пользователь не найден.",
+            show_alert=True
+        )
+        return
+
+    if user["blocked"]:
+        await callback.answer(
+            "Доступ заблокирован.",
+            show_alert=True
+        )
+        return
+
+    await callback.message.edit_text(
+        "⚠️ Удалить подписку?\n\n"
+        "Будут удалены все серверы "
+        "из текущей подписки.\n\n"
+        "⏳ Оставшееся время сохранится.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Да, удалить",
+                        callback_data="confirm_delete_subscription"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отмена",
+                        callback_data="back_subscription"
+                    )
+                ],
+            ]
+        )
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
+# =========================================================
+
+@dp.callback_query(
+    F.data == "confirm_delete_subscription"
+)
+async def confirm_delete_subscription_handler(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
+
+    if not user:
+        await callback.answer(
+            "Пользователь не найден.",
+            show_alert=True
+        )
+        return
+
+    if user["blocked"]:
+        await callback.answer(
+            "Доступ заблокирован.",
+            show_alert=True
+        )
+        return
+
+    try:
+        old_token = user["token"]
+
+        old_expires_at = int(
+            user["expires_at"]
+        )
+
+        now = now_timestamp()
+
+        remaining = (
+            old_expires_at
+            - now
+        )
+
+        if remaining <= 0:
+            await callback.answer(
+                "Подписка уже закончилась.",
+                show_alert=True
+            )
+            return
+
+        # -----------------------------------------
+        # 1. Удаляем старый GitHub-файл
+        # -----------------------------------------
+
+        delete_subscription(
+            old_token
+        )
+
+        # -----------------------------------------
+        # 2. Новый TOKEN
+        # -----------------------------------------
+
+        new_token = secrets.token_urlsafe(
+            24
+        )
+
+        # -----------------------------------------
+        # 3. Сохраняем старую дату окончания
+        # -----------------------------------------
+
+        replace_token(
+            callback.from_user.id,
+            new_token,
+            old_expires_at
+        )
+
+        # -----------------------------------------
+        # 4. Создаём новый GitHub-файл
+        #    с актуальными nodes.txt
+        # -----------------------------------------
+
+        new_url = publish_active(
+            new_token,
+            old_expires_at
+        )
+
+        # -----------------------------------------
+        # 5. Сохраняем новую ссылку
+        # -----------------------------------------
+
+        save_subscription_url(
+            callback.from_user.id,
+            new_url
+        )
+
+        new_user = get_user(
+            callback.from_user.id
+        )
+
+        await callback.message.edit_text(
+            "🍑 ПОДПИСКА ПЕРЕСОЗДАНА\n\n"
+            "✅ Старая подписка удалена\n"
+            "✅ Создана новая ссылка\n"
+            "⏳ Оставшееся время сохранено\n\n"
+            "📅 До: "
+            + format_date(
+                new_user["expires_at"]
+            )
+            + "\n\n"
+            "🔗 Новая ссылка:\n\n"
+            + new_user["subscription_url"],
+            reply_markup=subscription_keyboard()
+        )
+
+        await callback.answer(
+            "Подписка пересоздана."
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Ошибка пересоздания подписки"
+        )
+
+        await callback.answer(
+            "Ошибка:\n"
+            + str(error),
             show_alert=True
         )
 
@@ -679,7 +872,7 @@ async def admin_panel_handler(
 
 
 # =========================================================
-# СПИСОК ПОЛЬЗОВАТЕЛЕЙ
+# ПОЛЬЗОВАТЕЛИ
 # =========================================================
 
 @dp.callback_query(
@@ -700,25 +893,19 @@ async def admin_users_handler(
     users = list_users()
 
     if not users:
-        text = (
-            "👥 ПОЛЬЗОВАТЕЛИ\n\n"
-            "Пользователей пока нет."
-        )
-
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="⬅️ Назад",
-                        callback_data="admin_panel"
-                    )
-                ]
-            ]
-        )
-
         await callback.message.edit_text(
-            text,
-            reply_markup=keyboard
+            "👥 ПОЛЬЗОВАТЕЛИ\n\n"
+            "Пользователей пока нет.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Назад",
+                            callback_data="admin_panel"
+                        )
+                    ]
+                ]
+            )
         )
 
         await callback.answer()
@@ -778,7 +965,7 @@ async def admin_users_handler(
 
 
 # =========================================================
-# ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ АДМИНОМ
+# ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ
 # =========================================================
 
 @dp.callback_query(
@@ -830,18 +1017,20 @@ async def admin_user_handler(
     else:
         status = "⚫ Закончилась"
 
+    username = (
+        "@"
+        + user["username"]
+        if user["username"]
+        else "—"
+    )
+
     text = (
         "👤 ПОЛЬЗОВАТЕЛЬ\n\n"
         "🆔 ID: "
         + str(user["telegram_id"])
         + "\n"
         "👤 Username: "
-        + (
-            "@"
-            + user["username"]
-            if user["username"]
-            else "—"
-        )
+        + username
         + "\n\n"
         "📌 Статус: "
         + status
@@ -955,7 +1144,7 @@ async def admin_block_handler(
     )
 
     if user:
-        text = (
+        await callback.message.edit_text(
             "👤 ПОЛЬЗОВАТЕЛЬ\n\n"
             "🆔 ID: "
             + str(user["telegram_id"])
@@ -964,11 +1153,7 @@ async def admin_block_handler(
             "📅 До: "
             + format_date(
                 user["expires_at"]
-            )
-        )
-
-        await callback.message.edit_text(
-            text,
+            ),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -1038,17 +1223,19 @@ async def admin_unblock_handler(
     )
 
     if user:
+        status = (
+            "🟢 Активна"
+            if subscription_active(user)
+            else "⚫ Закончилась"
+        )
+
         await callback.message.edit_text(
             "👤 ПОЛЬЗОВАТЕЛЬ\n\n"
             "🆔 ID: "
             + str(user["telegram_id"])
             + "\n"
             "📌 Статус: "
-            + (
-                "🟢 Активна"
-                if subscription_active(user)
-                else "⚫ Закончилась"
-            )
+            + status
             + "\n"
             "📅 До: "
             + format_date(
@@ -1077,7 +1264,7 @@ async def admin_unblock_handler(
 
 
 # =========================================================
-# ФОНОВАЯ ПРОВЕРКА ОКОНЧАНИЯ
+# АВТОМАТИЧЕСКАЯ ПРОВЕРКА ОКОНЧАНИЯ
 # =========================================================
 
 async def subscription_checker():
@@ -1104,9 +1291,6 @@ async def subscription_checker():
                     - now_timestamp()
                 )
 
-                # <= 24 часов:
-                # переводим GitHub-файл
-                # в оконченный режим.
                 if remaining <= (
                     EXPIRED_WARNING_HOURS * 3600
                 ):
@@ -1121,7 +1305,7 @@ async def subscription_checker():
                         )
 
                         logger.info(
-                            "Subscription expired: %s",
+                            "Subscription ended: %s",
                             user["telegram_id"]
                         )
 
