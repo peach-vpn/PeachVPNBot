@@ -29,7 +29,7 @@ from database import (
 )
 
 from github_api import (
-    put_file,
+    put_file_verified,
     raw_subscription_url,
     subscription_path,
 )
@@ -51,10 +51,6 @@ NODES_FILE = "nodes.txt"
 
 admin_states = {}
 
-
-# =========================================================
-# КЛАВИАТУРЫ
-# =========================================================
 
 def main_keyboard(is_admin=False):
     buttons = [
@@ -203,10 +199,6 @@ def delete_confirm_keyboard():
     )
 
 
-# =========================================================
-# GITHUB SUBSCRIPTION
-# =========================================================
-
 def load_nodes():
     try:
         with open(
@@ -288,7 +280,7 @@ def update_github_subscription(user):
         user["token"]
     )
 
-    put_file(
+    put_file_verified(
         path,
         content,
         "Update PeachVPN subscription "
@@ -322,7 +314,7 @@ def invalidate_github_subscription(user):
         "",
     ])
 
-    put_file(
+    put_file_verified(
         subscription_path(
             user["token"]
         ),
@@ -331,10 +323,6 @@ def invalidate_github_subscription(user):
         + str(user["telegram_id"])
     )
 
-
-# =========================================================
-# ТЕКСТЫ
-# =========================================================
 
 def main_text(user):
     user = refresh_user(
@@ -469,10 +457,6 @@ def subscription_text(user):
     )
 
 
-# =========================================================
-# START
-# =========================================================
-
 @dp.message(CommandStart())
 async def start(message: Message):
     user = create_user(
@@ -506,10 +490,6 @@ async def start(message: Message):
     )
 
 
-# =========================================================
-# НАЗАД
-# =========================================================
-
 @dp.callback_query(F.data == "back")
 async def back(callback: CallbackQuery):
     user = get_user(
@@ -531,10 +511,6 @@ async def back(callback: CallbackQuery):
 
     await callback.answer()
 
-
-# =========================================================
-# МОЯ ПОДПИСКА
-# =========================================================
 
 @dp.callback_query(F.data == "subscription")
 async def subscription(
@@ -558,10 +534,6 @@ async def subscription(
     await callback.answer()
 
 
-# =========================================================
-# ОБНОВИТЬ
-# =========================================================
-
 @dp.callback_query(F.data == "refresh")
 async def refresh_subscription(
     callback: CallbackQuery
@@ -578,7 +550,7 @@ async def refresh_subscription(
         return
 
     try:
-        await asyncio.to_thread(
+        url = await asyncio.to_thread(
             update_github_subscription,
             user
         )
@@ -587,31 +559,36 @@ async def refresh_subscription(
             callback.from_user.id
         )
 
-        await callback.message.edit_text(
-            subscription_text(user),
-            reply_markup=subscription_keyboard()
-        )
+        try:
+            await callback.message.edit_text(
+                subscription_text(user),
+                reply_markup=subscription_keyboard()
+            )
+        except Exception as edit_error:
+            if "message is not modified" not in str(
+                edit_error
+            ):
+                raise
 
         await callback.answer(
-            "✅ Подписка обновлена."
+            "✅ GitHub-подписка обновлена."
         )
 
     except Exception as error:
         await callback.answer(
-            "Ошибка обновления.",
+            "Ошибка GitHub.",
             show_alert=True
         )
 
-        await callback.message.edit_text(
-            "❌ Ошибка обновления:\n\n"
-            + str(error),
-            reply_markup=subscription_keyboard()
-        )
+        try:
+            await callback.message.edit_text(
+                "❌ Ошибка обновления:\n\n"
+                + str(error),
+                reply_markup=subscription_keyboard()
+            )
+        except Exception:
+            pass
 
-
-# =========================================================
-# УДАЛЕНИЕ СВОЕЙ ПОДПИСКИ
-# =========================================================
 
 @dp.callback_query(
     F.data == "delete_my_subscription"
@@ -670,9 +647,7 @@ async def confirm_delete_my_subscription(
 
         await callback.message.edit_text(
             "🗑 Подписка удалена.\n\n"
-            "Серверная подписка отключена.\n\n"
-            "Если профиль уже добавлен в Happ, "
-            "его нужно удалить там вручную.",
+            "☁️ GitHub-файл отключён.",
             reply_markup=back_keyboard()
         )
 
@@ -686,12 +661,9 @@ async def confirm_delete_my_subscription(
             + str(error),
             reply_markup=back_keyboard()
         )
+
         await callback.answer()
 
-
-# =========================================================
-# ПРОМОКОД ПОЛЬЗОВАТЕЛЯ
-# =========================================================
 
 @dp.callback_query(F.data == "promo")
 async def promo_button(
@@ -710,10 +682,6 @@ async def promo_button(
     await callback.answer()
 
 
-# =========================================================
-# ПОМОЩЬ
-# =========================================================
-
 @dp.callback_query(F.data == "help")
 async def help_button(
     callback: CallbackQuery
@@ -723,19 +691,15 @@ async def help_button(
         "🍑 Персик VPN — бесплатный VPN.\n\n"
         "📦 Моя подписка — срок и ссылка.\n\n"
         "🔄 Обновить подписку — обновляет "
-        "конфигурацию.\n\n"
+        "конфигурацию на GitHub.\n\n"
         "🗑 Удалить подписку — отключает "
-        "подписку на сервере.\n\n"
+        "подписку.\n\n"
         "🎟 Промокод — добавить дни.",
         reply_markup=back_keyboard()
     )
 
     await callback.answer()
 
-
-# =========================================================
-# АДМИНКА
-# =========================================================
 
 @dp.callback_query(F.data == "admin")
 async def admin_panel(
@@ -756,10 +720,6 @@ async def admin_panel(
 
     await callback.answer()
 
-
-# =========================================================
-# УЧАСТНИКИ
-# =========================================================
 
 @dp.callback_query(F.data == "admin_users")
 async def admin_users(
@@ -832,10 +792,6 @@ async def admin_users(
     await callback.answer()
 
 
-# =========================================================
-# ВЫДАТЬ ДНИ
-# =========================================================
-
 @dp.callback_query(F.data == "admin_add_days")
 async def admin_add_days_button(
     callback: CallbackQuery
@@ -856,16 +812,12 @@ async def admin_add_days_button(
         "Формат:\n\n"
         "ID ДНИ\n\n"
         "Пример:\n"
-        "8847877937 30",
+        "123456789 30",
         reply_markup=back_keyboard()
     )
 
     await callback.answer()
 
-
-# =========================================================
-# АДМИН: УДАЛИТЬ
-# =========================================================
 
 @dp.callback_query(F.data == "admin_delete")
 async def admin_delete_button(
@@ -891,10 +843,6 @@ async def admin_delete_button(
     await callback.answer()
 
 
-# =========================================================
-# БЛОК
-# =========================================================
-
 @dp.callback_query(F.data == "admin_block")
 async def admin_block_button(
     callback: CallbackQuery
@@ -919,10 +867,6 @@ async def admin_block_button(
     await callback.answer()
 
 
-# =========================================================
-# РАЗБЛОК
-# =========================================================
-
 @dp.callback_query(F.data == "admin_unblock")
 async def admin_unblock_button(
     callback: CallbackQuery
@@ -946,10 +890,6 @@ async def admin_unblock_button(
 
     await callback.answer()
 
-
-# =========================================================
-# СОЗДАТЬ ПРОМО
-# =========================================================
 
 @dp.callback_query(F.data == "admin_create_promo")
 async def admin_create_promo_button(
@@ -977,10 +917,6 @@ async def admin_create_promo_button(
 
     await callback.answer()
 
-
-# =========================================================
-# ПРОМОКОДЫ
-# =========================================================
 
 @dp.callback_query(F.data == "admin_promos")
 async def admin_promos(
@@ -1031,10 +967,6 @@ async def admin_promos(
     await callback.answer()
 
 
-# =========================================================
-# ТЕКСТОВАЯ ОБРАБОТКА
-# =========================================================
-
 @dp.message(F.text)
 async def text_handler(
     message: Message
@@ -1042,10 +974,6 @@ async def text_handler(
     user_id = message.from_user.id
     state = admin_states.get(user_id)
     text = message.text.strip()
-
-    # =====================================================
-    # АДМИН: ВЫДАТЬ ДНИ
-    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1056,9 +984,7 @@ async def text_handler(
         if len(parts) != 2:
             await message.answer(
                 "❌ Формат:\n\n"
-                "ID ДНИ\n\n"
-                "Пример:\n"
-                "8847877937 30"
+                "ID ДНИ"
             )
             return
 
@@ -1077,7 +1003,9 @@ async def text_handler(
             )
             return
 
-        user = get_user(target_id)
+        user = get_user(
+            target_id
+        )
 
         if not user:
             await message.answer(
@@ -1086,16 +1014,17 @@ async def text_handler(
             return
 
         try:
-            add_days(
+            updated = add_days(
                 target_id,
                 days
             )
 
-            updated = get_user(
-                target_id
-            )
+            if not updated:
+                raise RuntimeError(
+                    "Пользователь исчез из базы."
+                )
 
-            url = await asyncio.to_thread(
+            await asyncio.to_thread(
                 update_github_subscription,
                 updated
             )
@@ -1133,8 +1062,8 @@ async def text_handler(
                 "🔢 expire: "
                 + str(expire_unix)
                 + "\n\n"
-                "☁️ GitHub обновлён.\n"
-                "🔗 Ссылка не изменилась."
+                "☁️ TOKEN.txt обновлён "
+                "и проверен на GitHub."
             )
 
         except Exception as error:
@@ -1149,10 +1078,6 @@ async def text_handler(
         )
 
         return
-
-    # =====================================================
-    # АДМИН: УДАЛЕНИЕ
-    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1189,7 +1114,7 @@ async def text_handler(
                 "👤 ID: "
                 + str(target_id)
                 + "\n"
-                "☁️ GitHub-подписка отключена."
+                "☁️ TOKEN.txt отключён."
             )
 
         except Exception as error:
@@ -1204,10 +1129,6 @@ async def text_handler(
         )
 
         return
-
-    # =====================================================
-    # АДМИН: БЛОКИРОВКА
-    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1246,10 +1167,7 @@ async def text_handler(
 
             await message.answer(
                 "🚫 Пользователь заблокирован.\n\n"
-                "👤 ID: "
-                + str(target_id)
-                + "\n"
-                "☁️ Подписка отключена."
+                "☁️ TOKEN.txt отключён."
             )
 
         except Exception as error:
@@ -1264,10 +1182,6 @@ async def text_handler(
         )
 
         return
-
-    # =====================================================
-    # АДМИН: РАЗБЛОКИРОВКА
-    # =====================================================
 
     if (
         user_id == ADMIN_ID
@@ -1299,17 +1213,15 @@ async def text_handler(
                 target_id
             )
 
-            url = await asyncio.to_thread(
+            await asyncio.to_thread(
                 update_github_subscription,
                 updated
             )
 
             await message.answer(
                 "✅ Пользователь разблокирован.\n\n"
-                "👤 ID: "
-                + str(target_id)
-                + "\n"
-                "☁️ Подписка снова опубликована."
+                "☁️ TOKEN.txt восстановлен "
+                "с актуальным expire."
             )
 
         except Exception as error:
@@ -1325,10 +1237,6 @@ async def text_handler(
 
         return
 
-    # =====================================================
-    # АДМИН: СОЗДАНИЕ ПРОМО
-    # =====================================================
-
     if (
         user_id == ADMIN_ID
         and state == "create_promo"
@@ -1338,9 +1246,7 @@ async def text_handler(
         if len(parts) != 3:
             await message.answer(
                 "❌ Формат:\n\n"
-                "КОД ДНИ ЛИМИТ\n\n"
-                "Пример:\n"
-                "FREE30 30 100"
+                "КОД ДНИ ЛИМИТ"
             )
             return
 
@@ -1355,15 +1261,9 @@ async def text_handler(
             )
             return
 
-        if days <= 0:
+        if days <= 0 or max_uses <= 0:
             await message.answer(
-                "❌ Дни должны быть больше нуля."
-            )
-            return
-
-        if max_uses <= 0:
-            await message.answer(
-                "❌ Лимит должен быть больше нуля."
+                "❌ Значения должны быть больше нуля."
             )
             return
 
@@ -1376,12 +1276,12 @@ async def text_handler(
 
             await message.answer(
                 "✅ Промокод создан.\n\n"
-                "🎟 Код: "
+                "🎟 "
                 + code
                 + "\n"
-                "⏳ Дней: "
+                "⏳ "
                 + str(days)
-                + "\n"
+                + " дн.\n"
                 "👥 Лимит: "
                 + str(max_uses)
             )
@@ -1398,10 +1298,6 @@ async def text_handler(
         )
 
         return
-
-    # =====================================================
-    # ПОЛЬЗОВАТЕЛЬ: ПРОМО
-    # =====================================================
 
     if state == "promo_user":
         success, result = use_promo(
@@ -1428,13 +1324,9 @@ async def text_handler(
             )
 
         try:
-            add_days(
+            updated = add_days(
                 user_id,
                 days
-            )
-
-            updated = get_user(
-                user_id
             )
 
             await asyncio.to_thread(
@@ -1470,10 +1362,6 @@ async def text_handler(
 
         return
 
-    # =====================================================
-    # ОБЫЧНЫЙ ТЕКСТ
-    # =====================================================
-
     user = get_user(
         user_id
     )
@@ -1491,10 +1379,6 @@ async def text_handler(
         )
     )
 
-
-# =========================================================
-# ЗАПУСК
-# =========================================================
 
 async def main():
     if not BOT_TOKEN:
