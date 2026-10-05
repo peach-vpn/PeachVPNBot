@@ -8,7 +8,7 @@ from config import (
     GITHUB_OWNER,
     GITHUB_REPO,
     GITHUB_BRANCH,
-    SUBSCRIPTIONS_DIR,
+    SUBSCRIPTIONS_DIR
 )
 
 
@@ -25,17 +25,18 @@ def api_url(path):
 
 def headers():
     return {
-        "Authorization": "Bearer " + GITHUB_TOKEN,
+        "Authorization": "Bearer "
+        + GITHUB_TOKEN,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "PeachVPNBot",
+        "User-Agent": "PeachVPNBot"
     }
 
 
 def get_file(path):
     if not GITHUB_TOKEN:
         raise RuntimeError(
-            "GITHUB_TOKEN не задан"
+            "GITHUB_TOKEN не задан."
         )
 
     request = urllib.request.Request(
@@ -49,7 +50,9 @@ def get_file(path):
             timeout=30
         ) as response:
             return json.loads(
-                response.read().decode("utf-8")
+                response.read().decode(
+                    "utf-8"
+                )
             )
 
     except urllib.error.HTTPError as error:
@@ -86,7 +89,10 @@ def decode_file(file_data):
     try:
         return base64.b64decode(
             content
-        ).decode("utf-8")
+        ).decode(
+            "utf-8"
+        )
+
     except Exception:
         return None
 
@@ -107,7 +113,7 @@ def put_file(
 ):
     if not GITHUB_TOKEN:
         raise RuntimeError(
-            "GITHUB_TOKEN не задан"
+            "GITHUB_TOKEN не задан."
         )
 
     old_file = get_file(path)
@@ -117,7 +123,7 @@ def put_file(
         "content": base64.b64encode(
             content.encode("utf-8")
         ).decode("ascii"),
-        "branch": GITHUB_BRANCH,
+        "branch": GITHUB_BRANCH
     }
 
     if old_file:
@@ -146,8 +152,10 @@ def put_file(
             request,
             timeout=30
         ) as response:
-            result = json.loads(
-                response.read().decode("utf-8")
+            return json.loads(
+                response.read().decode(
+                    "utf-8"
+                )
             )
 
     except urllib.error.HTTPError as error:
@@ -162,22 +170,6 @@ def put_file(
             + ": "
             + body
         )
-
-    return result
-
-
-def verify_file(
-    path,
-    expected_content
-):
-    actual = get_file_content(
-        path
-    )
-
-    if actual is None:
-        return False
-
-    return actual.strip() == expected_content.strip()
 
 
 def put_file_verified(
@@ -204,71 +196,32 @@ def put_file_verified(
     if actual.strip() != content.strip():
         raise RuntimeError(
             "GitHub не сохранил "
-            "ожидаемое содержимое TOKEN.txt."
+            "ожидаемое содержимое."
         )
 
     return True
 
 
-def delete_file(
+def verify_file(
     path,
-    message
+    expected_content
 ):
-    if not GITHUB_TOKEN:
-        raise RuntimeError(
-            "GITHUB_TOKEN не задан"
-        )
-
-    old_file = get_file(path)
-
-    if not old_file:
-        return False
-
-    payload = {
-        "message": message,
-        "sha": old_file["sha"],
-        "branch": GITHUB_BRANCH,
-    }
-
-    data = json.dumps(
-        payload
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-        api_url(path),
-        data=data,
-        headers={
-            **headers(),
-            "Content-Type":
-                "application/json"
-        },
-        method="DELETE"
+    actual = get_file_content(
+        path
     )
 
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=30
-        ) as response:
-            response.read()
+    if actual is None:
+        return False
 
-    except urllib.error.HTTPError as error:
-        body = error.read().decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        raise RuntimeError(
-            "GitHub API "
-            + str(error.code)
-            + ": "
-            + body
-        )
-
-    return True
+    return (
+        actual.strip()
+        == expected_content.strip()
+    )
 
 
-def raw_subscription_url(token):
+def raw_subscription_url(
+    token
+):
     return (
         "https://raw.githubusercontent.com/"
         + GITHUB_OWNER
@@ -284,10 +237,12 @@ def raw_subscription_url(token):
     )
 
 
-def subscription_path(token):
+def subscription_path(
+    token
+):
     return (
         SUBSCRIPTIONS_DIR
         + "/"
         + token
         + ".txt"
-)
+        )
