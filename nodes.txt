@@ -19,3 +19,5 @@ vless://8946bb45-505d-006e-91c0-5884a99f59fa@201.34.137.122:8443?encryption=none
 #КАЗАХСТАН
 
 vless://8946bb45-505d-00be-91c0-5884a99f59fa@80.66.89.30:8443?encryption=none&security=reality&type=tcp&headerType=none&sni=x5club.ru&fp=firefox&pbk=7T9ZSCdUh4IUlx17R1Vbzk8kjiopA3j5mI7-inh6aQU&sid=187eea0acfb7f778&spx=%2F4ae57e3cad3bf16#🇰🇿 Казахстан 1
+
+.
