@@ -49,9 +49,7 @@ def get_file(path):
             timeout=30
         ) as response:
             return json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
@@ -69,6 +67,37 @@ def get_file(path):
             + ": "
             + body
         )
+
+
+def decode_file(file_data):
+    if not file_data:
+        return None
+
+    content = file_data.get(
+        "content",
+        ""
+    )
+
+    content = content.replace(
+        "\n",
+        ""
+    )
+
+    try:
+        return base64.b64decode(
+            content
+        ).decode("utf-8")
+    except Exception:
+        return None
+
+
+def get_file_content(path):
+    data = get_file(path)
+
+    if not data:
+        return None
+
+    return decode_file(data)
 
 
 def put_file(
@@ -117,10 +146,8 @@ def put_file(
             request,
             timeout=30
         ) as response:
-            return json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
+            result = json.loads(
+                response.read().decode("utf-8")
             )
 
     except urllib.error.HTTPError as error:
@@ -135,6 +162,110 @@ def put_file(
             + ": "
             + body
         )
+
+    return result
+
+
+def verify_file(
+    path,
+    expected_content
+):
+    actual = get_file_content(
+        path
+    )
+
+    if actual is None:
+        return False
+
+    return actual.strip() == expected_content.strip()
+
+
+def put_file_verified(
+    path,
+    content,
+    message
+):
+    put_file(
+        path,
+        content,
+        message
+    )
+
+    actual = get_file_content(
+        path
+    )
+
+    if actual is None:
+        raise RuntimeError(
+            "GitHub файл не найден "
+            "после обновления."
+        )
+
+    if actual.strip() != content.strip():
+        raise RuntimeError(
+            "GitHub не сохранил "
+            "ожидаемое содержимое TOKEN.txt."
+        )
+
+    return True
+
+
+def delete_file(
+    path,
+    message
+):
+    if not GITHUB_TOKEN:
+        raise RuntimeError(
+            "GITHUB_TOKEN не задан"
+        )
+
+    old_file = get_file(path)
+
+    if not old_file:
+        return False
+
+    payload = {
+        "message": message,
+        "sha": old_file["sha"],
+        "branch": GITHUB_BRANCH,
+    }
+
+    data = json.dumps(
+        payload
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        api_url(path),
+        data=data,
+        headers={
+            **headers(),
+            "Content-Type":
+                "application/json"
+        },
+        method="DELETE"
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=30
+        ) as response:
+            response.read()
+
+    except urllib.error.HTTPError as error:
+        body = error.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        raise RuntimeError(
+            "GitHub API "
+            + str(error.code)
+            + ": "
+            + body
+        )
+
+    return True
 
 
 def raw_subscription_url(token):
@@ -159,4 +290,4 @@ def subscription_path(token):
         + "/"
         + token
         + ".txt"
-    )
+)
