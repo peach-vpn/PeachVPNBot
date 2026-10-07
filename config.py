@@ -9,7 +9,7 @@ BOT_TOKEN = os.getenv(
 ADMIN_ID = int(
     os.getenv(
         "ADMIN_ID",
-        "0"
+        "8847877937"
     )
 )
 
@@ -45,18 +45,3 @@ NODES_FILE = "nodes.txt"
 PRO_FILE = "pro.txt"
 
 FREE_DAYS = 30
-
-if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN не задан"
-    )
-
-if not ADMIN_ID:
-    raise RuntimeError(
-        "ADMIN_ID не задан"
-    )
-
-if not GITHUB_TOKEN:
-    raise RuntimeError(
-        "GITHUB_TOKEN не задан"
-    )
