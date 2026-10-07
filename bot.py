@@ -11,9 +11,13 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
-from config import BOT_TOKEN, ADMIN_ID
+from config import (
+    BOT_TOKEN,
+    ADMIN_ID,
+)
 
 from database import (
+    connect,
     init_db,
     get_user,
     create_user,
@@ -24,48 +28,96 @@ from database import (
     create_promo,
     list_promos,
     use_promo,
-    connect,
 )
 
 from github_api import (
     publish_subscription,
-    raw_subscription_url,
 )
 
 
-logging.basicConfig(level=logging.INFO)
+# ============================================================
+# НАСТРОЙКИ
+# ============================================================
 
-bot = Bot(token=BOT_TOKEN)
+logging.basicConfig(
+    level=logging.INFO
+)
+
+bot = Bot(
+    token=BOT_TOKEN
+)
+
 dp = Dispatcher()
 
 ADMIN_STATES = {}
 
 
 # ============================================================
-# ОБЩИЕ ФУНКЦИИ
+# ПРОВЕРКА АДМИНА
 # ============================================================
 
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
 
+# ============================================================
+# ДАТА
+# ============================================================
+
 def fmt_date(value) -> str:
-    if not value:
+    if value is None:
         return "—"
 
+    text = str(value).strip()
+
+    if not text:
+        return "—"
+
+    # Unix timestamp
     try:
-        dt = datetime.fromisoformat(str(value))
+        if text.isdigit():
+            timestamp = int(text)
+
+            # Если вдруг timestamp в миллисекундах
+            if timestamp > 100000000000:
+                timestamp = timestamp / 1000
+
+            dt = datetime.fromtimestamp(
+                timestamp,
+                tz=timezone.utc
+            )
+
+            return dt.strftime(
+                "%d.%m.%Y %H:%M:%S"
+            )
+    except Exception:
+        pass
+
+    # ISO дата
+    try:
+        dt = datetime.fromisoformat(text)
 
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(
+                tzinfo=timezone.utc
+            )
 
-        return dt.strftime("%d.%m.%Y %H:%M:%S")
+        return dt.strftime(
+            "%d.%m.%Y %H:%M:%S"
+        )
 
     except Exception:
-        return str(value)
+        return text
 
 
-def save_subscription_url(telegram_id: int, url: str):
+# ============================================================
+# СОХРАНИТЬ URL ПОДПИСКИ
+# ============================================================
+
+def save_subscription_url(
+    telegram_id: int,
+    url: str
+):
     conn = connect()
 
     conn.execute(
@@ -74,53 +126,58 @@ def save_subscription_url(telegram_id: int, url: str):
         SET subscription_url = ?
         WHERE telegram_id = ?
         """,
-        (url, telegram_id)
+        (
+            url,
+            telegram_id
+        )
     )
 
     conn.commit()
     conn.close()
 
 
-def get_state(user_id: int):
-    return ADMIN_STATES.get(user_id)
+# ============================================================
+# СОСТОЯНИЯ АДМИНА
+# ============================================================
 
-
-def set_state(user_id: int, data: dict):
+def set_state(
+    user_id: int,
+    data: dict
+):
     ADMIN_STATES[user_id] = data
 
 
+def get_state(user_id: int):
+    return ADMIN_STATES.get(
+        user_id
+    )
+
+
 def clear_state(user_id: int):
-    ADMIN_STATES.pop(user_id, None)
-
-
-def rebuild_subscription(user):
-    if not user:
-        return None
-
-    url = publish_subscription(
-        token=user["token"],
-        tariff=user["tariff"],
-        expires_at=user["expires_at"],
+    ADMIN_STATES.pop(
+        user_id,
+        None
     )
-
-    save_subscription_url(
-        user["telegram_id"],
-        url
-    )
-
-    return url
 
 
 # ============================================================
 # ГЛАВНОЕ МЕНЮ
 # ============================================================
 
-def main_keyboard(user_id: int):
+def main_keyboard(
+    user_id: int
+):
     buttons = [
         [
             InlineKeyboardButton(
                 text="🍑 Моя подписка",
                 callback_data="my_subscription"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🎟 Промокод",
+                callback_data="promo_menu"
             )
         ],
         [
@@ -131,6 +188,7 @@ def main_keyboard(user_id: int):
         ],
     ]
 
+    # Кнопка видна ТОЛЬКО админу
     if is_admin(user_id):
         buttons.append(
             [
@@ -145,6 +203,10 @@ def main_keyboard(user_id: int):
         inline_keyboard=buttons
     )
 
+
+# ============================================================
+# АДМИН-КЛАВИАТУРА
+# ============================================================
 
 def admin_keyboard():
     return InlineKeyboardMarkup(
@@ -189,6 +251,10 @@ def admin_keyboard():
     )
 
 
+# ============================================================
+# ТАРИФЫ
+# ============================================================
+
 def tariff_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -211,6 +277,10 @@ def tariff_keyboard():
         ]
     )
 
+
+# ============================================================
+# БЛОКИРОВКА
+# ============================================================
 
 def block_keyboard():
     return InlineKeyboardMarkup(
@@ -235,6 +305,10 @@ def block_keyboard():
     )
 
 
+# ============================================================
+# НАЗАД В АДМИНКУ
+# ============================================================
+
 def back_admin_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -249,21 +323,50 @@ def back_admin_keyboard():
 
 
 # ============================================================
-# /START
+# ПУБЛИКАЦИЯ ПОДПИСКИ
+# ============================================================
+
+def rebuild_subscription(user):
+    if user is None:
+        return None
+
+    url = publish_subscription(
+        token=user["token"],
+        tariff=user["tariff"],
+        expires_at=user["expires_at"],
+    )
+
+    save_subscription_url(
+        user["telegram_id"],
+        url
+    )
+
+    return url
+
+
+# ============================================================
+# ГЛАВНАЯ /START
 # ============================================================
 
 @dp.message(Command("start"))
-async def start_command(message: Message):
+async def start_command(
+    message: Message
+):
     telegram_id = message.from_user.id
 
-    user = get_user(telegram_id)
+    user = get_user(
+        telegram_id
+    )
 
-    if user is not None and user["blocked"]:
-        await message.answer(
-            "🚫 Вы заблокированы."
-        )
-        return
+    # Заблокирован
+    if user is not None:
+        if user["blocked"]:
+            await message.answer(
+                "🚫 Вы заблокированы."
+            )
+            return
 
+    # Новый пользователь
     if user is None:
         user = create_user(
             telegram_id=telegram_id,
@@ -280,8 +383,11 @@ async def start_command(message: Message):
                 "Ошибка создания подписки"
             )
 
-        user = get_user(telegram_id)
+        user = get_user(
+            telegram_id
+        )
 
+    # Если ссылка почему-то отсутствует
     elif not user["subscription_url"]:
         try:
             await asyncio.to_thread(
@@ -293,7 +399,9 @@ async def start_command(message: Message):
                 "Ошибка восстановления ссылки"
             )
 
-        user = get_user(telegram_id)
+        user = get_user(
+            telegram_id
+        )
 
     await message.answer(
         "🍑 ПЕРСИК VPN\n\n"
@@ -301,7 +409,9 @@ async def start_command(message: Message):
         f"📅 До: {fmt_date(user['expires_at'])}\n"
         "📦 Трафик: Безлимит\n\n"
         "👇 Выбери действие:",
-        reply_markup=main_keyboard(telegram_id)
+        reply_markup=main_keyboard(
+            telegram_id
+        )
     )
 
 
@@ -310,14 +420,20 @@ async def start_command(message: Message):
 # ============================================================
 
 @dp.message(Command("admin"))
-async def admin_command(message: Message):
-    if not is_admin(message.from_user.id):
+async def admin_command(
+    message: Message
+):
+    if not is_admin(
+        message.from_user.id
+    ):
         await message.answer(
             "⛔ Доступ запрещён."
         )
         return
 
-    clear_state(message.from_user.id)
+    clear_state(
+        message.from_user.id
+    )
 
     await message.answer(
         "⚙️ АДМИН-ПАНЕЛЬ\n\n"
@@ -330,9 +446,15 @@ async def admin_command(message: Message):
 # НАЗАД В ГЛАВНОЕ
 # ============================================================
 
-@dp.callback_query(F.data == "back_main")
-async def back_main(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
+@dp.callback_query(
+    F.data == "back_main"
+)
+async def back_main(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
 
     if user is None:
         await callback.answer(
@@ -348,7 +470,9 @@ async def back_main(callback: CallbackQuery):
         )
         return
 
-    clear_state(callback.from_user.id)
+    clear_state(
+        callback.from_user.id
+    )
 
     await callback.message.edit_text(
         "🍑 ПЕРСИК VPN\n\n"
@@ -365,12 +489,67 @@ async def back_main(callback: CallbackQuery):
 
 
 # ============================================================
+# ПРОМОКОД — МЕНЮ
+# ============================================================
+
+@dp.callback_query(
+    F.data == "promo_menu"
+)
+async def promo_menu(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
+
+    if user is None:
+        await callback.answer(
+            "Сначала нажми /start",
+            show_alert=True
+        )
+        return
+
+    if user["blocked"]:
+        await callback.answer(
+            "🚫 Вы заблокированы",
+            show_alert=True
+        )
+        return
+
+    await callback.message.edit_text(
+        "🎟 ПРОМОКОД\n\n"
+        "Введи промокод командой:\n\n"
+        "/promo КОД\n\n"
+        "Например:\n"
+        "/promo PEACHPRO",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад",
+                        callback_data="back_main"
+                    )
+                ]
+            ]
+        )
+    )
+
+    await callback.answer()
+
+
+# ============================================================
 # МОЯ ПОДПИСКА
 # ============================================================
 
-@dp.callback_query(F.data == "my_subscription")
-async def my_subscription(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
+@dp.callback_query(
+    F.data == "my_subscription"
+)
+async def my_subscription(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
 
     if user is None:
         await callback.answer(
@@ -394,7 +573,7 @@ async def my_subscription(callback: CallbackQuery):
             )
         except Exception:
             logging.exception(
-                "Ошибка публикации"
+                "Ошибка создания URL"
             )
 
         user = get_user(
@@ -433,9 +612,15 @@ async def my_subscription(callback: CallbackQuery):
 # МОЯ ССЫЛКА
 # ============================================================
 
-@dp.callback_query(F.data == "my_link")
-async def my_link(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
+@dp.callback_query(
+    F.data == "my_link"
+)
+async def my_link(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
 
     if user is None:
         await callback.answer(
@@ -485,12 +670,18 @@ async def my_link(callback: CallbackQuery):
 
 
 # ============================================================
-# ОБНОВЛЕНИЕ ПОДПИСКИ
+# ОБНОВИТЬ ПОДПИСКУ
 # ============================================================
 
-@dp.callback_query(F.data == "refresh_subscription")
-async def refresh_subscription(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
+@dp.callback_query(
+    F.data == "refresh_subscription"
+)
+async def refresh_subscription(
+    callback: CallbackQuery
+):
+    user = get_user(
+        callback.from_user.id
+    )
 
     if user is None:
         await callback.answer(
@@ -510,10 +701,6 @@ async def refresh_subscription(callback: CallbackQuery):
         await asyncio.to_thread(
             rebuild_subscription,
             user
-        )
-
-        await callback.answer(
-            "✅ Подписка обновлена"
         )
 
         user = get_user(
@@ -545,6 +732,10 @@ async def refresh_subscription(callback: CallbackQuery):
             )
         )
 
+        await callback.answer(
+            "✅ Подписка обновлена"
+        )
+
     except Exception:
         logging.exception(
             "Ошибка обновления подписки"
@@ -560,16 +751,24 @@ async def refresh_subscription(callback: CallbackQuery):
 # АДМИН-ПАНЕЛЬ
 # ============================================================
 
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "admin_panel"
+)
+async def admin_panel(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
         )
         return
 
-    clear_state(callback.from_user.id)
+    clear_state(
+        callback.from_user.id
+    )
 
     await callback.message.edit_text(
         "⚙️ АДМИН-ПАНЕЛЬ\n\n"
@@ -581,12 +780,18 @@ async def admin_panel(callback: CallbackQuery):
 
 
 # ============================================================
-# ПОЛЬЗОВАТЕЛИ
+# АДМИН — ПОЛЬЗОВАТЕЛИ
 # ============================================================
 
-@dp.callback_query(F.data == "admin_users")
-async def admin_users(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "admin_users"
+)
+async def admin_users(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -602,7 +807,8 @@ async def admin_users(callback: CallbackQuery):
         )
     else:
         lines = [
-            "👥 ПОЛЬЗОВАТЕЛИ\n"
+            "👥 ПОЛЬЗОВАТЕЛИ",
+            ""
         ]
 
         for user in users[:50]:
@@ -629,12 +835,18 @@ async def admin_users(callback: CallbackQuery):
 
 
 # ============================================================
-# ПРОМОКОДЫ
+# АДМИН — ПРОМОКОДЫ
 # ============================================================
 
-@dp.callback_query(F.data == "admin_promos")
-async def admin_promos(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "admin_promos"
+)
+async def admin_promos(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -643,20 +855,17 @@ async def admin_promos(callback: CallbackQuery):
 
     promos = list_promos()
 
-    if not promos:
-        text = (
-            "🎟 ПРОМОКОДЫ\n\n"
-            "Промокодов пока нет.\n\n"
-            "Создание:\n"
-            "/createpromo КОД ТАРИФ ДНИ ЛИМИТ\n\n"
-            "Пример:\n"
-            "/createpromo PEACHPRO 2 30 100"
-        )
-    else:
-        lines = [
-            "🎟 ПРОМОКОДЫ\n"
-        ]
+    lines = [
+        "🎟 ПРОМОКОДЫ",
+        ""
+    ]
 
+    if not promos:
+        lines.append(
+            "Промокодов пока нет."
+        )
+
+    else:
         for promo in promos:
             active = (
                 "🟢 Да"
@@ -669,11 +878,13 @@ async def admin_promos(callback: CallbackQuery):
                 f"💎 Тариф: {promo['tariff']}\n"
                 f"📅 Дней: {promo['days']}\n"
                 f"👥 Использований: "
-                f"{promo['uses']}/{promo['max_uses']}\n"
+                f"{promo['uses']}/"
+                f"{promo['max_uses']}\n"
                 f"Статус: {active}\n"
             )
 
-        lines.extend([
+    lines.extend(
+        [
             "",
             "Создание:",
             "/createpromo КОД ТАРИФ ДНИ ЛИМИТ",
@@ -683,12 +894,11 @@ async def admin_promos(callback: CallbackQuery):
             "",
             "Пример:",
             "/createpromo PEACHPRO 2 30 100",
-        ])
-
-        text = "\n".join(lines)
+        ]
+    )
 
     await callback.message.edit_text(
-        text,
+        "\n".join(lines),
         reply_markup=back_admin_keyboard()
     )
 
@@ -696,19 +906,27 @@ async def admin_promos(callback: CallbackQuery):
 
 
 # ============================================================
-# ВЫДАТЬ ТАРИФ
+# АДМИН — ВЫДАТЬ ТАРИФ
 # ============================================================
 
-@dp.callback_query(F.data == "admin_give_tariff")
-async def admin_give_tariff(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "admin_give_tariff"
+)
+async def admin_give_tariff(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
         )
         return
 
-    clear_state(callback.from_user.id)
+    clear_state(
+        callback.from_user.id
+    )
 
     await callback.message.edit_text(
         "➕ ВЫДАТЬ ТАРИФ\n\n"
@@ -721,9 +939,15 @@ async def admin_give_tariff(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("give_tariff_"))
-async def select_tariff(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data.startswith("give_tariff_")
+)
+async def select_tariff(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -735,7 +959,10 @@ async def select_tariff(callback: CallbackQuery):
         ""
     )
 
-    if tariff not in ("Free", "PRO"):
+    if tariff not in (
+        "Free",
+        "PRO"
+    ):
         await callback.answer(
             "❌ Неверный тариф",
             show_alert=True
@@ -760,12 +987,18 @@ async def select_tariff(callback: CallbackQuery):
 
 
 # ============================================================
-# ДОБАВИТЬ ДНИ
+# АДМИН — ДОБАВИТЬ ДНИ
 # ============================================================
 
-@dp.callback_query(F.data == "admin_add_days")
-async def admin_add_days(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "admin_add_days"
+)
+async def admin_add_days(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -788,12 +1021,18 @@ async def admin_add_days(callback: CallbackQuery):
 
 
 # ============================================================
-# БЛОКИРОВКИ
+# АДМИН — БЛОКИРОВКИ
 # ============================================================
 
-@dp.callback_query(F.data == "admin_blocks")
-async def admin_blocks(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "admin_blocks"
+)
+async def admin_blocks(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -816,12 +1055,18 @@ async def admin_blocks(callback: CallbackQuery):
 
 
 # ============================================================
-# СОЗДАНИЕ ПРОМОКОДА
+# /CREATEPROMO
 # ============================================================
 
-@dp.message(Command("createpromo"))
-async def createpromo_command(message: Message):
-    if not is_admin(message.from_user.id):
+@dp.message(
+    Command("createpromo")
+)
+async def createpromo_command(
+    message: Message
+):
+    if not is_admin(
+        message.from_user.id
+    ):
         await message.answer(
             "⛔ Доступ запрещён."
         )
@@ -831,8 +1076,7 @@ async def createpromo_command(message: Message):
 
     if len(parts) != 5:
         await message.answer(
-            "❌ Неверный формат.\n\n"
-            "Используй:\n"
+            "❌ Формат:\n\n"
             "/createpromo КОД ТАРИФ ДНИ ЛИМИТ\n\n"
             "1 = Free\n"
             "2 = PRO\n\n"
@@ -843,10 +1087,18 @@ async def createpromo_command(message: Message):
 
     _, code, tariff, days_text, limit_text = parts
 
-    if tariff == "1":
+    if tariff.upper() in (
+        "1",
+        "FREE"
+    ):
         tariff = "Free"
-    elif tariff == "2":
+
+    elif tariff.upper() in (
+        "2",
+        "PRO"
+    ):
         tariff = "PRO"
+
     else:
         await message.answer(
             "❌ Тариф должен быть:\n"
@@ -856,8 +1108,13 @@ async def createpromo_command(message: Message):
         return
 
     try:
-        days = int(days_text)
-        limit = int(limit_text)
+        days = int(
+            days_text
+        )
+
+        limit = int(
+            limit_text
+        )
 
         if days <= 0 or limit <= 0:
             raise ValueError
@@ -893,11 +1150,15 @@ async def createpromo_command(message: Message):
 
 
 # ============================================================
-# АКТИВАЦИЯ ПРОМОКОДА
+# /PROMO
 # ============================================================
 
-@dp.message(Command("promo"))
-async def promo_command(message: Message):
+@dp.message(
+    Command("promo")
+)
+async def promo_command(
+    message: Message
+):
     user = get_user(
         message.from_user.id
     )
@@ -933,23 +1194,30 @@ async def promo_command(message: Message):
     )
 
     if status != "ok":
-        messages = {
+
+        errors = {
             "not_found":
                 "❌ Промокод не найден.",
+
             "disabled":
                 "❌ Промокод отключён.",
+
             "limit":
                 "❌ Лимит активаций исчерпан.",
+
             "already_used":
-                "❌ Ты уже использовал этот промокод.",
+                "❌ Ты уже использовал "
+                "этот промокод.",
         }
 
         await message.answer(
-            messages.get(
+            errors.get(
                 status,
-                "❌ Не удалось активировать промокод."
+                "❌ Не удалось активировать "
+                "промокод."
             )
         )
+
         return
 
     updated_user = get_user(
@@ -963,7 +1231,7 @@ async def promo_command(message: Message):
         )
     except Exception:
         logging.exception(
-            "Ошибка обновления после промокода"
+            "Ошибка публикации после промокода"
         )
 
     updated_user = get_user(
@@ -979,12 +1247,18 @@ async def promo_command(message: Message):
 
 
 # ============================================================
-# ТЕКСТОВЫЙ ВВОД АДМИНА
+# ВВОД ТЕКСТА АДМИНА
 # ============================================================
 
-@dp.message(F.text)
-async def admin_text_input(message: Message):
-    if not is_admin(message.from_user.id):
+@dp.message(
+    F.text
+)
+async def admin_text_input(
+    message: Message
+):
+    if not is_admin(
+        message.from_user.id
+    ):
         return
 
     state = get_state(
@@ -995,25 +1269,35 @@ async def admin_text_input(message: Message):
         return
 
     text = message.text.strip()
-    action = state.get("action")
 
-    # --------------------------------------------------------
+    action = state.get(
+        "action"
+    )
+
+    # ========================================================
     # ВЫДАТЬ ТАРИФ
-    # --------------------------------------------------------
+    # ========================================================
 
     if action == "give_tariff":
+
         try:
-            telegram_id = int(text)
+            telegram_id = int(
+                text
+            )
         except ValueError:
             await message.answer(
                 "❌ Telegram ID должен быть числом."
             )
             return
 
-        user = get_user(telegram_id)
+        user = get_user(
+            telegram_id
+        )
 
         if user is None:
-            clear_state(message.from_user.id)
+            clear_state(
+                message.from_user.id
+            )
 
             await message.answer(
                 "❌ Пользователь не найден.",
@@ -1021,22 +1305,24 @@ async def admin_text_input(message: Message):
             )
             return
 
-        old_expires = user["expires_at"]
-        tariff = state["tariff"]
+        old_expires = user[
+            "expires_at"
+        ]
 
-        updated_user = set_tariff(
+        tariff = state[
+            "tariff"
+        ]
+
+        # Меняем ТОЛЬКО тариф.
+        # Срок НЕ меняется.
+        set_tariff(
             telegram_id,
             tariff
         )
 
-        if updated_user is None:
-            clear_state(message.from_user.id)
-
-            await message.answer(
-                "❌ Не удалось выдать тариф.",
-                reply_markup=admin_keyboard()
-            )
-            return
+        updated_user = get_user(
+            telegram_id
+        )
 
         try:
             await asyncio.to_thread(
@@ -1045,7 +1331,7 @@ async def admin_text_input(message: Message):
             )
         except Exception:
             logging.exception(
-                "Ошибка публикации после смены тарифа"
+                "Ошибка публикации тарифа"
             )
 
         clear_state(
@@ -1055,7 +1341,7 @@ async def admin_text_input(message: Message):
         await message.answer(
             "✅ ТАРИФ ВЫДАН\n\n"
             f"👤 ID: {telegram_id}\n"
-            f"💎 Новый тариф: {tariff}\n\n"
+            f"💎 Тариф: {tariff}\n\n"
             "📅 Срок НЕ изменён:\n"
             f"{fmt_date(old_expires)}\n\n"
             "➕ Дни не добавлялись.",
@@ -1064,23 +1350,30 @@ async def admin_text_input(message: Message):
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # ДОБАВИТЬ ДНИ — ID
-    # --------------------------------------------------------
+    # ========================================================
 
     if action == "add_days_id":
+
         try:
-            telegram_id = int(text)
+            telegram_id = int(
+                text
+            )
         except ValueError:
             await message.answer(
                 "❌ Telegram ID должен быть числом."
             )
             return
 
-        user = get_user(telegram_id)
+        user = get_user(
+            telegram_id
+        )
 
         if user is None:
-            clear_state(message.from_user.id)
+            clear_state(
+                message.from_user.id
+            )
 
             await message.answer(
                 "❌ Пользователь не найден.",
@@ -1091,27 +1384,33 @@ async def admin_text_input(message: Message):
         set_state(
             message.from_user.id,
             {
-                "action": "add_days_value",
-                "telegram_id": telegram_id,
+                "action":
+                    "add_days_value",
+                "telegram_id":
+                    telegram_id,
             }
         )
 
         await message.answer(
             "⏳ ДОБАВИТЬ ДНИ\n\n"
             f"👤 ID: {telegram_id}\n"
-            f"📅 Сейчас до: {fmt_date(user['expires_at'])}\n\n"
+            f"📅 Сейчас до: "
+            f"{fmt_date(user['expires_at'])}\n\n"
             "Введите количество дней:"
         )
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # ДОБАВИТЬ ДНИ — КОЛИЧЕСТВО
-    # --------------------------------------------------------
+    # ========================================================
 
     if action == "add_days_value":
+
         try:
-            days = int(text)
+            days = int(
+                text
+            )
 
             if days <= 0:
                 raise ValueError
@@ -1123,12 +1422,18 @@ async def admin_text_input(message: Message):
             )
             return
 
-        telegram_id = state["telegram_id"]
+        telegram_id = state[
+            "telegram_id"
+        ]
 
-        user = get_user(telegram_id)
+        user = get_user(
+            telegram_id
+        )
 
         if user is None:
-            clear_state(message.from_user.id)
+            clear_state(
+                message.from_user.id
+            )
 
             await message.answer(
                 "❌ Пользователь не найден.",
@@ -1136,21 +1441,18 @@ async def admin_text_input(message: Message):
             )
             return
 
-        old_expires = user["expires_at"]
+        old_expires = user[
+            "expires_at"
+        ]
 
-        updated_user = add_days(
+        add_days(
             telegram_id,
             days
         )
 
-        if updated_user is None:
-            clear_state(message.from_user.id)
-
-            await message.answer(
-                "❌ Не удалось добавить дни.",
-                reply_markup=admin_keyboard()
-            )
-            return
+        updated_user = get_user(
+            telegram_id
+        )
 
         try:
             await asyncio.to_thread(
@@ -1179,23 +1481,30 @@ async def admin_text_input(message: Message):
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # БЛОКИРОВКА — ID
-    # --------------------------------------------------------
+    # ========================================================
 
     if action == "block_id":
+
         try:
-            telegram_id = int(text)
+            telegram_id = int(
+                text
+            )
         except ValueError:
             await message.answer(
                 "❌ Telegram ID должен быть числом."
             )
             return
 
-        user = get_user(telegram_id)
+        user = get_user(
+            telegram_id
+        )
 
         if user is None:
-            clear_state(message.from_user.id)
+            clear_state(
+                message.from_user.id
+            )
 
             await message.answer(
                 "❌ Пользователь не найден.",
@@ -1206,8 +1515,10 @@ async def admin_text_input(message: Message):
         set_state(
             message.from_user.id,
             {
-                "action": "block_choice",
-                "telegram_id": telegram_id,
+                "action":
+                    "block_choice",
+                "telegram_id":
+                    telegram_id,
             }
         )
 
@@ -1227,9 +1538,15 @@ async def admin_text_input(message: Message):
 # БЛОКИРОВКА
 # ============================================================
 
-@dp.callback_query(F.data == "block_yes")
-async def block_yes(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "block_yes"
+)
+async def block_yes(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -1247,7 +1564,9 @@ async def block_yes(callback: CallbackQuery):
         )
         return
 
-    telegram_id = state["telegram_id"]
+    telegram_id = state[
+        "telegram_id"
+    ]
 
     set_blocked(
         telegram_id,
@@ -1266,9 +1585,15 @@ async def block_yes(callback: CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data == "block_no")
-async def block_no(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(
+    F.data == "block_no"
+)
+async def block_no(
+    callback: CallbackQuery
+):
+    if not is_admin(
+        callback.from_user.id
+    ):
         await callback.answer(
             "⛔ Доступ запрещён",
             show_alert=True
@@ -1286,7 +1611,9 @@ async def block_no(callback: CallbackQuery):
         )
         return
 
-    telegram_id = state["telegram_id"]
+    telegram_id = state[
+        "telegram_id"
+    ]
 
     set_blocked(
         telegram_id,
@@ -1310,6 +1637,7 @@ async def block_no(callback: CallbackQuery):
 # ============================================================
 
 async def main():
+
     if not BOT_TOKEN:
         raise RuntimeError(
             "BOT_TOKEN не задан"
@@ -1321,8 +1649,12 @@ async def main():
         "🍑 PeachVPN Bot запущен"
     )
 
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(
+        main()
+    )
