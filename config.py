@@ -1,9 +1,16 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    ""
+)
 
 ADMIN_ID = int(
-    os.getenv("ADMIN_ID", "8847877937")
+    os.getenv(
+        "ADMIN_ID",
+        "0"
+    )
 )
 
 DATABASE_FILE = os.getenv(
@@ -35,16 +42,21 @@ SUBSCRIPTIONS_DIR = "subscriptions"
 
 NODES_FILE = "nodes.txt"
 
-HAPP_PAGE = (
-    "https://peach-vpn.github.io/"
-    "Free-VPN-/happ_page.html"
-)
+PRO_FILE = "pro.txt"
 
-SUBSCRIPTION_DAYS = 30
+FREE_DAYS = 30
 
-# За сколько часов до окончания
-# переключать файл в режим "подписка закончилась".
-EXPIRED_WARNING_HOURS = 24
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN не задан"
+    )
 
-# Как часто проверять подписки.
-CHECK_INTERVAL_SECONDS = 300
+if not ADMIN_ID:
+    raise RuntimeError(
+        "ADMIN_ID не задан"
+    )
+
+if not GITHUB_TOKEN:
+    raise RuntimeError(
+        "GITHUB_TOKEN не задан"
+    )
